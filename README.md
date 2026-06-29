@@ -10,17 +10,7 @@
   <img src="https://img.shields.io/badge/License-MIT-orange?style=for-the-badge" alt="Licenza" />
 </p>
 
-<p align="center">
-  🎥 <strong>Guarda il video di configurazione e demo:</strong> <a href="https://youtu.be/qvamkqmLPn8">https://youtu.be/qvamkqmLPn8</a>
-</p>
 
-<p align="center">
-  <a href="https://youtu.be/qvamkqmLPn8">
-    <img src="https://img.youtube.com/vi/qvamkqmLPn8/maxresdefault.jpg" alt="Tutorial video di Uncensored AI Studio" width="800" style="border-radius: 8px;" />
-  </a>
-</p>
-
----
 
 
 ## 📖 Indice
