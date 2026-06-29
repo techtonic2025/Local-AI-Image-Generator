@@ -1,285 +1,285 @@
 #  Uncensored AI Studio
 
 <p align="center">
-  <strong>A premium, zero-configuration local AI studio and offline GUI for Stable Diffusion (Image Generation), LLMs (Chat), Whisper (Speech-to-Text), and Kokoro (Text-to-Speech). Powered by hardware-accelerated GPU and NPU execution on Windows, Linux, and macOS.</strong>
+  <strong>Uno studio AI locale premium, senza configurazione, e una GUI offline per Stable Diffusion (generazione immagini), LLM (chat), Whisper (speech-to-text) e Kokoro (text-to-speech). Alimentato da esecuzione accelerata via GPU e NPU su Windows, Linux e macOS.</strong>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Offline-100%25-green?style=for-the-badge&logo=offline" alt="100% Offline" />
-  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue?style=for-the-badge" alt="Platforms" />
-  <img src="https://img.shields.io/badge/License-MIT-orange?style=for-the-badge" alt="License" />
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue?style=for-the-badge" alt="Piattaforme" />
+  <img src="https://img.shields.io/badge/License-MIT-orange?style=for-the-badge" alt="Licenza" />
 </p>
 
 <p align="center">
-  🎥 <strong>Watch the Setup & Demo Video:</strong> <a href="https://youtu.be/qvamkqmLPn8">https://youtu.be/qvamkqmLPn8</a>
+  🎥 <strong>Guarda il video di configurazione e demo:</strong> <a href="https://youtu.be/qvamkqmLPn8">https://youtu.be/qvamkqmLPn8</a>
 </p>
 
 <p align="center">
   <a href="https://youtu.be/qvamkqmLPn8">
-    <img src="https://img.youtube.com/vi/qvamkqmLPn8/maxresdefault.jpg" alt="Uncensored AI Studio Video Tutorial" width="800" style="border-radius: 8px;" />
+    <img src="https://img.youtube.com/vi/qvamkqmLPn8/maxresdefault.jpg" alt="Tutorial video di Uncensored AI Studio" width="800" style="border-radius: 8px;" />
   </a>
 </p>
 
 ---
 
 
-## 📖 Table of Contents
-* [What is Uncensored AI Studio?](#what-is-uncensored-ai-studio)
-* [Key Features](#key-features)
-* [Workspace & Engine Architecture](#workspace-architecture)
-* [Supported Models](#supported-models)
-* [Folder Architecture](#folder-architecture)
-* [Getting Started](#getting-started)
-  * [Windows Setup](#windows-setup)
-  * [Linux Setup](#linux-setup)
-  * [macOS Setup](#macos-setup)
-* [Hardware Compatibility & Acceleration](#hardware-compatibility-acceleration)
-* [Troubleshooting & FAQ](#troubleshooting-faq)
-* [Building From Source](#building-from-source)
-* [Licensing](#licensing)
+## 📖 Indice
+* [Che cos’è Uncensored AI Studio?](#what-is-uncensored-ai-studio)
+* [Funzionalità principali](#key-features)
+* [Architettura workspace ed engine](#workspace-architecture)
+* [Modelli supportati](#supported-models)
+* [Architettura delle cartelle](#folder-architecture)
+* [Guida introduttiva](#getting-started)
+  * [Configurazione Windows](#windows-setup)
+  * [Configurazione Linux](#linux-setup)
+  * [Configurazione macOS](#macos-setup)
+* [Compatibilità hardware e accelerazione](#hardware-compatibility-acceleration)
+* [Risoluzione problemi e FAQ](#troubleshooting-faq)
+* [Compilazione da sorgente](#building-from-source)
+* [Licenza](#licensing)
 
 ---
 
-## <a id="what-is-uncensored-ai-studio"></a>📖 What is Uncensored AI Studio?
+## <a id="what-is-uncensored-ai-studio"></a>📖 Che cos’è Uncensored AI Studio?
 
-**Uncensored AI Studio** is a completely offline, zero-setup, self-contained AI studio for Windows, Linux, and macOS. Unlike cloud-based AI systems, it runs entirely on your own hardware with no censorship, tracking, subscriptions, or login requirements.
+**Uncensored AI Studio** è uno studio AI completamente offline, senza configurazione e autonomo per Windows, Linux e macOS. A differenza dei sistemi AI basati su cloud, funziona interamente sul tuo hardware, senza censura, tracciamento, abbonamenti o requisiti di login.
 
-It unifies four major local AI capabilities into one high-performance desktop interface:
-1. **🎨 Image Generation (Stable Diffusion):** Generate and edit high-quality images offline using `.safetensors`, `.gguf`, or `.ckpt` model weights.
-2. **💬 Text Chat (LLMs):** Converse privately with open-source language models (GGUF format) powered by official, high-performance `llama.cpp` backends.
-3. **🎙️ Speech-to-Text (Whisper):** Transcribe voice recordings and speech to text in real-time with an integrated `whisper.cpp` engine.
-4. **🗣️ Text-to-Speech (Kokoro TTS):** Convert text outputs into highly natural, lifelike vocal audio offline using the `Kokoro-82M` ONNX model.
-
----
-
-## <a id="key-features"></a>🌟 Key Features
-
-*   **100% Offline & Private:** Run inferences locally. No internet, telemetry, cloud logging, or API keys required.
-*   **Zero-Install Portability:** Entire runtime (Node.js, models, GPU backends) is self-contained. Zero global system environment changes.
-*   **Auto-Configured Acceleration:** Auto-detects hardware specs to load CUDA (Nvidia), ROCm (AMD), Vulkan (Intel/AMD/NVIDIA), Metal (macOS), or OpenVINO (Intel NPU) backends.
-*   **Integrated Model Manager:** Paste Hugging Face URLs to download weights directly, or drag-and-drop local weights to import them.
-*   **Live Performance Monitor:** Track CPU, RAM, GPU, and VRAM utilization in real-time directly inside the web UI.
-*   **Local Output Gallery:** Saves generated images side-by-side with prompt parameters and metadata JSON files.
+Unifica quattro grandi funzionalità AI locali in un’unica interfaccia desktop ad alte prestazioni:
+1. **🎨 Generazione immagini (Stable Diffusion):** genera e modifica immagini di alta qualità offline usando pesi modello `.safetensors`, `.gguf` o `.ckpt`.
+2. **💬 Chat testuale (LLM):** conversa in privato con modelli linguistici open-source (formato GGUF) alimentati dai backend ufficiali e ad alte prestazioni `llama.cpp`.
+3. **🎙️ Speech-to-Text (Whisper):** trascrive registrazioni vocali e parlato in testo in tempo reale con un motore `whisper.cpp` integrato.
+4. **🗣️ Text-to-Speech (Kokoro TTS):** converte output testuali in audio vocale altamente naturale e realistico offline usando il modello ONNX `Kokoro-82M`.
 
 ---
 
-## <a id="workspace-architecture"></a>⚙️ Workspace & Engine Architecture
+## <a id="key-features"></a>🌟 Funzionalità principali
 
-To avoid exhausting system RAM or VRAM, text and image engines are mutually exclusive by default. You can switch between workspaces inside the UI:
-
-*   **Image Generation Workspace:** Uses a dedicated `stable-diffusion.cpp` backend node. Model weights are stored in `app/models/`.
-*   **Text Chat Workspace:** Uses a portable `llama.cpp` server backend. Model weights (.gguf) are stored in `app/llm-models/`. A small Qwen2.5 Coder starter model can be downloaded directly from the Text Chat panel.
-*   **Speech Worker (Whisper):** Runs a localized `whisper-cli` process to convert your vocal input to text.
-*   **Audio Output (Kokoro TTS):** Utilizes `kokoro-js` locally on the server side to read responses in natural voices.
+*   **100% offline e privato:** esegue le inferenze localmente. Non richiede internet, telemetria, logging cloud o chiavi API.
+*   **Portabilità senza installazione:** l’intero runtime (Node.js, modelli, backend GPU) è autonomo. Nessuna modifica globale all’ambiente di sistema.
+*   **Accelerazione autoconfigurata:** rileva automaticamente le specifiche hardware per caricare backend CUDA (Nvidia), ROCm (AMD), Vulkan (Intel/AMD/NVIDIA), Metal (macOS) o OpenVINO (Intel NPU).
+*   **Gestore modelli integrato:** incolla URL Hugging Face per scaricare direttamente i pesi, oppure trascina e rilascia pesi locali per importarli.
+*   **Monitor prestazioni live:** monitora l’utilizzo di CPU, RAM, GPU e VRAM in tempo reale direttamente nella web UI.
+*   **Galleria output locale:** salva le immagini generate affiancate ai parametri del prompt e ai file JSON dei metadati.
 
 ---
 
-## <a id="supported-models"></a>Supported Models
+## <a id="workspace-architecture"></a>⚙️ Architettura workspace ed engine
 
-The app is designed around single-file local models that can be loaded directly by the bundled backend engines.
+Per evitare di esaurire la RAM o la VRAM di sistema, i motori testuali e quelli per immagini sono mutuamente esclusivi per impostazione predefinita. Puoi passare da un workspace all’altro dentro la UI:
 
-### Image generation
+*   **Workspace generazione immagini:** usa un nodo backend dedicato `stable-diffusion.cpp`. I pesi dei modelli sono archiviati in `app/models/`.
+*   **Workspace chat testuale:** usa un backend server portatile `llama.cpp`. I pesi dei modelli (.gguf) sono archiviati in `app/llm-models/`. Un piccolo modello iniziale Qwen2.5 Coder può essere scaricato direttamente dal pannello Text Chat.
+*   **Worker vocale (Whisper):** esegue un processo localizzato `whisper-cli` per convertire il tuo input vocale in testo.
+*   **Output audio (Kokoro TTS):** utilizza `kokoro-js` localmente lato server per leggere le risposte con voci naturali.
 
-| Model type | Supported | Put files in | Notes |
+---
+
+## <a id="supported-models"></a>Modelli supportati
+
+L’app è progettata intorno a modelli locali a file singolo che possono essere caricati direttamente dai motori backend inclusi.
+
+### Generazione immagini
+
+| Tipo di modello | Supportato | Inserire i file in | Note |
 | :--- | :--- | :--- | :--- |
-| Stable Diffusion 1.5 checkpoints | Yes | `app/models/` | Best compatibility. Use `.safetensors` or `.ckpt` files. |
-| SDXL checkpoints | Yes | `app/models/` | Supported as single-file checkpoints. Requires more RAM/VRAM than SD 1.5. |
-| Single-file SD/SDXL GGUF checkpoints | Limited | `app/models/` | Only complete single-file checkpoints are supported. |
-| OpenVINO image model folders | Intel NPU only | `app/openvino-models/` | Download from the Model Manager after running the OpenVINO setup. |
-| CoreML image models | Apple Silicon only | `app/models/` | Requires macOS on Apple Silicon and the CoreML setup path. |
-| Flux, HiDream, Hunyuan, Wan, Qwen Image, Z-Image workflows | No | N/A | These usually require separate diffusion, VAE, and text encoder files and are not one-click checkpoint loads in this app. |
-| LoRA, ControlNet, VAE-only, text-encoder-only, or diffusion-only files | No | N/A | Companion files are not loaded as standalone image models. |
+| Checkpoint Stable Diffusion 1.5 | Sì | `app/models/` | Migliore compatibilità. Usa file `.safetensors` o `.ckpt`. |
+| Checkpoint SDXL | Sì | `app/models/` | Supportati come checkpoint a file singolo. Richiedono più RAM/VRAM rispetto a SD 1.5. |
+| Checkpoint SD/SDXL GGUF a file singolo | Limitato | `app/models/` | Sono supportati solo checkpoint completi a file singolo. |
+| Cartelle modelli immagine OpenVINO | Solo Intel NPU | `app/openvino-models/` | Scarica dal Model Manager dopo aver eseguito la configurazione OpenVINO. |
+| Modelli immagine CoreML | Solo Apple Silicon | `app/models/` | Richiede macOS su Apple Silicon e il percorso di configurazione CoreML. |
+| Workflow Flux, HiDream, Hunyuan, Wan, Qwen Image, Z-Image | No | N/A | Di solito richiedono file separati per diffusion, VAE e text encoder e non sono caricamenti one-click di checkpoint in questa app. |
+| File LoRA, ControlNet, solo VAE, solo text encoder o solo diffusion | No | N/A | I file companion non vengono caricati come modelli immagine autonomi. |
 
-Known-good image models available from the Model Manager:
+Modelli immagine noti e funzionanti disponibili dal Model Manager:
 
-| Name | Filename | Type | Approx. size | Recommended use |
+| Nome | Nome file | Tipo | Dimensione approx. | Uso consigliato |
 | :--- | :--- | :--- | :--- | :--- |
-| Juggernaut XL v9 Lightning | `Juggernaut_RunDiffusionPhoto2_Lightning_4Steps.safetensors` | SDXL | 6.6 GB | High-quality photorealism on mid/high tier machines. |
-| DreamShaper XL Lightning | `DreamShaperXL_Lightning.safetensors` | SDXL | 6.6 GB | General SDXL images, fantasy, renders, and illustration. |
-| DreamShaper 8 | `DreamShaper_8_pruned.safetensors` | SD 1.5 | 2.1 GB | Faster, lower-memory image generation. |
-| CyberRealistic V8 | `CyberRealistic_V8_FP16.safetensors` | SD 1.5 | 2.0 GB | Realistic SD 1.5 images and lower-memory systems. |
-| Rev Animated | `rev-animated-v1-2-2.safetensors` | SD 1.5 | 2.0 GB | Stylized/anime SD 1.5 images. |
-| LCM DreamShaper OpenVINO | `OpenVINO/LCM_Dreamshaper_v7-fp16-ov` | OpenVINO | 2.7 GB | Intel Core Ultra NPU test model. |
+| Juggernaut XL v9 Lightning | `Juggernaut_RunDiffusionPhoto2_Lightning_4Steps.safetensors` | SDXL | 6,6 GB | Fotorealismo di alta qualità su macchine di fascia media/alta. |
+| DreamShaper XL Lightning | `DreamShaperXL_Lightning.safetensors` | SDXL | 6,6 GB | Immagini SDXL generiche, fantasy, render e illustrazione. |
+| DreamShaper 8 | `DreamShaper_8_pruned.safetensors` | SD 1.5 | 2,1 GB | Generazione immagini più veloce e con meno memoria. |
+| CyberRealistic V8 | `CyberRealistic_V8_FP16.safetensors` | SD 1.5 | 2,0 GB | Immagini realistiche SD 1.5 e sistemi con meno memoria. |
+| Rev Animated | `rev-animated-v1-2-2.safetensors` | SD 1.5 | 2,0 GB | Immagini stilizzate/anime SD 1.5. |
+| LCM DreamShaper OpenVINO | `OpenVINO/LCM_Dreamshaper_v7-fp16-ov` | OpenVINO | 2,7 GB | Modello di test Intel Core Ultra NPU. |
 
-### Text, speech, and TTS
+### Testo, voce e TTS
 
-| Workspace | Supported model files | Put files in | Notes |
+| Workspace | File modello supportati | Inserire i file in | Note |
 | :--- | :--- | :--- | :--- |
-| Text Chat | `.gguf` llama.cpp models | `app/llm-models/` | Use single-file GGUF chat/instruct models. Vision models may also require a matching `mmproj` file. |
-| Speech-to-Text | whisper.cpp `.bin` models | `app/speech-models/` | Use Whisper GGML/whisper.cpp model files. |
-| Text-to-Speech | Kokoro `.json` manifests and model assets | `app/tts-models/` / `app/tts-runtime/` | Use the built-in Kokoro setup and Model Manager entries. |
+| Chat testuale | Modelli `.gguf` llama.cpp | `app/llm-models/` | Usa modelli chat/instruct GGUF a file singolo. I modelli vision possono richiedere anche un file `mmproj` corrispondente. |
+| Speech-to-Text | Modelli whisper.cpp `.bin` | `app/speech-models/` | Usa file modello Whisper GGML/whisper.cpp. |
+| Text-to-Speech | Manifest `.json` Kokoro e asset modello | `app/tts-models/` / `app/tts-runtime/` | Usa la configurazione Kokoro integrata e le voci del Model Manager. |
 
 > [!NOTE]
-> Linux release binaries are built for Ubuntu 24.04-era systems and require `glibc 2.38+` plus `GLIBCXX_3.4.32+`. On older Ubuntu/Debian VMs, a model such as CyberRealistic may be valid but the backend can still fail before loading it. Upgrade the VM OS or build the backend from source.
+> I binari della release Linux sono compilati per sistemi dell’era Ubuntu 24.04 e richiedono `glibc 2.38+` più `GLIBCXX_3.4.32+`. Su VM Ubuntu/Debian più vecchie, un modello come CyberRealistic può essere valido, ma il backend può comunque fallire prima di caricarlo. Aggiorna il sistema operativo della VM oppure compila il backend da sorgente.
 
 ---
 
-## <a id="folder-architecture"></a>📁 Folder Architecture
+## <a id="folder-architecture"></a>📁 Architettura delle cartelle
 
 ```
 Uncensored-AI-Studio/
-├── windows.bat                # Windows Launcher (Double-click entrypoint)
-├── linux.sh                   # Linux Launcher (Terminal entrypoint)
-├── mac.sh                     # macOS Launcher (Terminal entrypoint)
-├── LICENSE                    # MIT Open Source License
-├── .gitignore                 # Excludes models and output images from version control
-├── README.md                  # Detailed system documentation
+├── windows.bat                # Launcher Windows (punto di ingresso con doppio clic)
+├── linux.sh                   # Launcher Linux (punto di ingresso da terminale)
+├── mac.sh                     # Launcher macOS (punto di ingresso da terminale)
+├── LICENSE                    # Licenza open source MIT
+├── .gitignore                 # Esclude modelli e immagini di output dal controllo versione
+├── README.md                  # Documentazione dettagliata del sistema
 ├── scripts/
-│   ├── setup/                 # Platform setup and backend installers
-│   ├── reset/                 # Clean install & environment repair
-│   ├── server/                # UI web server and backend lifecycle manager
-│   ├── workers/               # Local worker processes
-│   ├── build/                 # Optional source build helpers
-│   └── config/                # Runtime configuration catalogs
+│   ├── setup/                 # Configurazione piattaforma e installer backend
+│   ├── reset/                 # Installazione pulita e riparazione ambiente
+│   ├── server/                # Web server UI e gestore ciclo di vita backend
+│   ├── workers/               # Processi worker locali
+│   ├── build/                 # Helper opzionali per build da sorgente
+│   └── config/                # Cataloghi configurazione runtime
 └── app/
-    ├── frontend/              # UI source code (Vite + React)
-    ├── models/                # Place image weights here (.safetensors, .gguf, .ckpt)
-    ├── llm-models/            # Place text GGUF weights here
-    └── outputs/               # Saved images and parameters metadata
+    ├── frontend/              # Codice sorgente UI (Vite + React)
+    ├── models/                # Inserisci qui i pesi immagine (.safetensors, .gguf, .ckpt)
+    ├── llm-models/            # Inserisci qui i pesi testuali GGUF
+    └── outputs/               # Immagini salvate e metadati parametri
 ```
 
 ---
 
-## <a id="getting-started"></a>🚀 Getting Started
+## <a id="getting-started"></a>🚀 Guida introduttiva
 
-Ensure you have a modern web browser installed. Follow the quick guide below for your platform:
+Assicurati di avere installato un browser web moderno. Segui la guida rapida qui sotto per la tua piattaforma:
 
-### Windows Setup
+### Configurazione Windows
 
-1. **Launch:** Double-click **`windows.bat`**.
+1. **Avvio:** fai doppio clic su **`windows.bat`**.
    > [!NOTE]
-   > On the first run, the script will automatically download a portable Node.js runtime and configure pre-compiled GPU/CPU backend binaries.
-2. **Add Models:** Drop `.safetensors`, `.gguf`, or `.ckpt` weights into `app/models/` (or download them via the **Model Manager** tab in the UI).
-3. **Generate:** Open `http://localhost:1420` in your browser, select your model, and write a prompt.
+   > Al primo avvio, lo script scaricherà automaticamente un runtime Node.js portatile e configurerà binari backend GPU/CPU precompilati.
+2. **Aggiungi modelli:** trascina file `.safetensors`, `.gguf` o `.ckpt` dentro `app/models/` oppure scaricali tramite la scheda **Model Manager** nella UI.
+3. **Genera:** apri `http://localhost:1420` nel browser, seleziona il modello e scrivi un prompt.
 
-### Linux Setup
+### Configurazione Linux
 
-1. **Make executable:** Open a terminal in the project folder and make the script executable:
+1. **Rendi eseguibile:** apri un terminale nella cartella del progetto e rendi eseguibile lo script:
    ```bash
    chmod +x linux.sh
    ```
-2. **Launch:** Run **`./linux.sh`**.
-   - **NVIDIA GPU Users:** You will be prompted to set up the high-performance **CUDA** backend (downloads prebuilt or automatically compiles from source as a fallback).
-   - **AMD Radeon Performance:** Run with **`./linux.sh --max-perf`** to add the ROCm backend (~1.3 GB download).
-   - **Intel Core Ultra NPU:** Run with **`./linux.sh --setup-openvino`** to configure Intel NPU support (requires Intel Linux NPU driver).
-3. **Add Models:** Drop your weights into `app/models/` or download them via the **Model Manager** tab.
-4. **Generate:** Open `http://localhost:1420` in your browser.
+2. **Avvio:** esegui **`./linux.sh`**.
+   - **Utenti GPU NVIDIA:** ti verrà chiesto di configurare il backend **CUDA** ad alte prestazioni (scarica precompilato o compila automaticamente da sorgente come fallback).
+   - **Prestazioni AMD Radeon:** esegui con **`./linux.sh --max-perf`** per aggiungere il backend ROCm (~1,3 GB di download).
+   - **Intel Core Ultra NPU:** esegui con **`./linux.sh --setup-openvino`** per configurare il supporto Intel NPU (richiede driver Intel Linux NPU).
+3. **Aggiungi modelli:** trascina i pesi dentro `app/models/` oppure scaricali tramite la scheda **Model Manager**.
+4. **Genera:** apri `http://localhost:1420` nel browser.
 
-### macOS Setup
+### Configurazione macOS
 
-1. **Make executable:** Open a terminal in the project folder and make the script executable:
+1. **Rendi eseguibile:** apri un terminale nella cartella del progetto e rendi eseguibile lo script:
    ```bash
    chmod +x mac.sh
    ```
-2. **Launch:** Run **`./mac.sh`**.
+2. **Avvio:** esegui **`./mac.sh`**.
    > [!IMPORTANT]
-   > The prebuilt macOS backend is optimized for **Apple Silicon (M1 or newer)** and uses **Metal** GPU acceleration. *(macOS Intel hardware is completely unsupported)*.
-3. **Add Models:** Drop your weights into `app/models/` or download them via the **Model Manager** tab.
-4. **Generate:** Open `http://localhost:1420` in your browser.
+   > Il backend macOS precompilato è ottimizzato per **Apple Silicon (M1 o più recente)** e usa accelerazione GPU **Metal**. *(L’hardware macOS Intel non è supportato in alcun modo)*.
+3. **Aggiungi modelli:** trascina i pesi dentro `app/models/` oppure scaricali tramite la scheda **Model Manager**.
+4. **Genera:** apri `http://localhost:1420` nel browser.
 
 ---
 
-## <a id="hardware-compatibility-acceleration"></a>🖥️ Hardware Compatibility & Acceleration
+## <a id="hardware-compatibility-acceleration"></a>🖥️ Compatibilità hardware e accelerazione
 
 ### Windows
 
-| GPU Vendor | Tech | Status | Notes |
+| Produttore GPU | Tecnologia | Stato | Note |
 | :--- | :--- | :--- | :--- |
-| **Nvidia** | CUDA | ✅ Native | Maps `sd-cuda.exe` with Nvidia SDK 12 optimizations. |
-| **AMD Radeon** | Vulkan | ✅ Native | Maps `sd-vulkan.exe` with Vulkan API acceleration. |
-| **Intel Arc** | Vulkan | ✅ Native | Maps `sd-vulkan.exe` for Intel hardware. |
-| **Integrated / None** | CPU | ⚠️ Fallback | Runs on logical CPU threads (slow). |
+| **Nvidia** | CUDA | ✅ Nativo | Mappa `sd-cuda.exe` con ottimizzazioni Nvidia SDK 12. |
+| **AMD Radeon** | Vulkan | ✅ Nativo | Mappa `sd-vulkan.exe` con accelerazione API Vulkan. |
+| **Intel Arc** | Vulkan | ✅ Nativo | Mappa `sd-vulkan.exe` per hardware Intel. |
+| **Integrata / Nessuna** | CPU | ⚠️ Fallback | Esegue sui thread logici della CPU (lento). |
 
 ### Linux
 
-| GPU Vendor | Primary | Fallback | Notes |
+| Produttore GPU | Primario | Fallback | Note |
 | :--- | :--- | :--- | :--- |
-| **NVIDIA** | CUDA / Vulkan | Vulkan / CPU | Auto-detects NVIDIA. Prompt-driven CUDA setup downloads prebuilt or compiles from source. Falls back to Vulkan for GTX. |
-| **AMD Radeon** | ROCm | Vulkan | ROCm provides best AMD performance when host ROCm drivers are available. |
-| **Intel Arc / integrated** | Vulkan | CPU | Cross-vendor Vulkan support. |
-| **Intel Core Ultra NPU** | OpenVINO NPU | CPU | Requires the Intel Linux NPU driver, kernel 6.6+, Python 3, and `./linux.sh --setup-openvino`. |
-| **Integrated / None** | CPU | — | Runs on logical CPU threads (slow). |
+| **NVIDIA** | CUDA / Vulkan | Vulkan / CPU | Rileva automaticamente NVIDIA. La configurazione CUDA guidata scarica il precompilato o compila da sorgente. Ripiega su Vulkan per GTX. |
+| **AMD Radeon** | ROCm | Vulkan | ROCm fornisce le migliori prestazioni AMD quando sono disponibili i driver ROCm dell’host. |
+| **Intel Arc / integrata** | Vulkan | CPU | Supporto Vulkan cross-vendor. |
+| **Intel Core Ultra NPU** | OpenVINO NPU | CPU | Richiede driver Intel Linux NPU, kernel 6.6+, Python 3 e `./linux.sh --setup-openvino`. |
+| **Integrata / Nessuna** | CPU | — | Esegue sui thread logici della CPU (lento). |
 
 ### macOS
 
-| Hardware | Primary | Fallback | Notes |
+| Hardware | Primario | Fallback | Note |
 | :--- | :--- | :--- | :--- |
-| **Apple Silicon (M1 or newer)** | Metal | CPU | Uses the official Darwin arm64 stable-diffusion.cpp backend. |
+| **Apple Silicon (M1 o più recente)** | Metal | CPU | Usa il backend ufficiale Darwin arm64 stable-diffusion.cpp. |
 
 > [!IMPORTANT]
-> **System Requirements & Notes:**
-> - **64-bit Windows 10 or Windows 11** is required for the portable Node.js 22 runtime used by the Windows launcher.
-> - **glibc 2.38 or newer** is required for the prebuilt Linux backends (Ubuntu 24.04, Fedora 40+, etc.). The setup script will warn you if your glibc is older.
-> - **Linux OpenVINO NPU:** Intel Core Ultra, x86_64 Linux, kernel 6.6+, a working `/dev/accel/accel0` device, Python 3 with `venv`, and the Intel Linux NPU driver are required.
+> **Requisiti di sistema e note:**
+> - È richiesto **Windows 10 o Windows 11 a 64 bit** per il runtime Node.js 22 portatile usato dal launcher Windows.
+> - È richiesto **glibc 2.38 o più recente** per i backend Linux precompilati (Ubuntu 24.04, Fedora 40+, ecc.). Lo script di configurazione ti avviserà se la tua glibc è più vecchia.
+> - **Linux OpenVINO NPU:** sono richiesti Intel Core Ultra, Linux x86_64, kernel 6.6+, un dispositivo `/dev/accel/accel0` funzionante, Python 3 con `venv` e il driver Intel Linux NPU.
 
 ---
 
-## <a id="troubleshooting-faq"></a>🛠️ Troubleshooting & FAQ
+## <a id="troubleshooting-faq"></a>🛠️ Risoluzione problemi e FAQ
 
 <details>
-  <summary><strong> Reset Environment: If a build fails or you want to clear dependencies</strong></summary>
-  <p>Run <code>scripts/reset/reset.ps1</code> (Windows) or <code>scripts/reset/reset.sh</code> (Linux/macOS). This will clear temporary compilation and package caches to repair your environment. <em>(Note: This preserves your model weights and generated output images).</em></p>
+  <summary><strong> Reset ambiente: se una build fallisce o vuoi cancellare le dipendenze</strong></summary>
+  <p>Esegui <code>scripts/reset/reset.ps1</code> (Windows) oppure <code>scripts/reset/reset.sh</code> (Linux/macOS). Questo cancellerà cache temporanee di compilazione e pacchetti per riparare il tuo ambiente. <em>(Nota: conserva i pesi dei modelli e le immagini generate).</em></p>
 </details>
 
 <details>
-  <summary><strong> Linux backends fail to start with <code>GLIBC_2.38 not found</code></strong></summary>
-  <p>The prebuilt binaries require glibc 2.38+ (e.g. Ubuntu 24.04). If your distribution uses an older glibc version, you can upgrade your operating system or compile the backend from source (see the <a href="#building-from-source">Building From Source</a> guide below).</p>
+  <summary><strong> I backend Linux non si avviano con <code>GLIBC_2.38 not found</code></strong></summary>
+  <p>I binari precompilati richiedono glibc 2.38+ (es. Ubuntu 24.04). Se la tua distribuzione usa una versione più vecchia di glibc, puoi aggiornare il sistema operativo oppure compilare il backend da sorgente (vedi la guida <a href="#building-from-source">Compilazione da sorgente</a> qui sotto).</p>
 </details>
 
 <details>
-  <summary><strong> Port Conflicts: Default port address already busy</strong></summary>
-  <p>The web user interface runs on port <code>1420</code> by default. The GPU backend manager attempts to bind to port <code>8080</code> first, then automatically detects and falls back to a free system port if <code>8080</code> is already occupied.</p>
+  <summary><strong> Conflitti porta: indirizzo porta predefinito già occupato</strong></summary>
+  <p>L’interfaccia web utente funziona sulla porta <code>1420</code> per impostazione predefinita. Il gestore backend GPU prova prima ad agganciarsi alla porta <code>8080</code>, poi rileva automaticamente e passa a una porta libera se <code>8080</code> è già occupata.</p>
 </details>
 
 <details>
-  <summary><strong> Linux ROCm not loading for AMD Radeon GPUs</strong></summary>
-  <p>Ensure your AMD GPU hardware and host kernel are fully compatible with ROCm 7.13. If ROCm fails to initialize correctly, the application will automatically fall back to Vulkan acceleration.</p>
+  <summary><strong> Linux ROCm non si carica per GPU AMD Radeon</strong></summary>
+  <p>Assicurati che l’hardware della tua GPU AMD e il kernel host siano pienamente compatibili con ROCm 7.13. Se ROCm non riesce a inizializzarsi correttamente, l’applicazione passerà automaticamente all’accelerazione Vulkan.</p>
 </details>
 
 <details>
-  <summary><strong> Linux uses the integrated GPU instead of the discrete GPU</strong></summary>
-  <p>On dual-GPU Linux systems, Vulkan device order can put the integrated Intel GPU at <code>vulkan0</code> and the discrete AMD/NVIDIA GPU at <code>vulkan1</code>. The launcher now tries to prefer a discrete Vulkan device when <code>vulkaninfo --summary</code> is available. To force a device manually, start the app with <code>SD_VULKAN_DEVICE=vulkan1 ./linux.sh</code> or use another index such as <code>vulkan0</code>/<code>vulkan2</code>.</p>
+  <summary><strong> Linux usa la GPU integrata invece della GPU dedicata</strong></summary>
+  <p>Su sistemi Linux dual-GPU, l’ordine dei dispositivi Vulkan può mettere la GPU Intel integrata su <code>vulkan0</code> e la GPU AMD/NVIDIA dedicata su <code>vulkan1</code>. Il launcher ora prova a preferire un dispositivo Vulkan dedicato quando <code>vulkaninfo --summary</code> è disponibile. Per forzare manualmente un dispositivo, avvia l’app con <code>SD_VULKAN_DEVICE=vulkan1 ./linux.sh</code> oppure usa un altro indice come <code>vulkan0</code>/<code>vulkan2</code>.</p>
 </details>
 
 <details>
-  <summary><strong> Windows exits with code <code>3221225781</code> (0xC0000135)</strong></summary>
-  <p>This code means Windows could not locate a required backend DLL:</p>
+  <summary><strong> Windows esce con codice <code>3221225781</code> (0xC0000135)</strong></summary>
+  <p>Questo codice significa che Windows non è riuscito a trovare una DLL backend richiesta:</p>
   <ul>
-    <li><strong>For AMD/Intel Vulkan:</strong> Update your GPU driver to one with full Vulkan runtime support, then rerun the setup script to restore <code>app/backend/win/vulkan/</code>.</li>
-    <li><strong>For NVIDIA CUDA:</strong> Install or update your NVIDIA graphics driver, then rerun the setup script to restore the CUDA runtime DLLs.</li>
+    <li><strong>Per AMD/Intel Vulkan:</strong> aggiorna il driver GPU a una versione con supporto completo al runtime Vulkan, poi riesegui lo script di configurazione per ripristinare <code>app/backend/win/vulkan/</code>.</li>
+    <li><strong>Per NVIDIA CUDA:</strong> installa o aggiorna il driver grafico NVIDIA, poi riesegui lo script di configurazione per ripristinare le DLL runtime CUDA.</li>
   </ul>
 </details>
 
 <details>
-  <summary><strong> Generation shows "server is not responding or crashed"</strong></summary>
-  <p>This indicates that the local backend engine process terminated. Check your launch terminal (where you executed <code>windows.bat</code>, <code>./linux.sh</code>, or <code>./mac.sh</code>) for the exact console error. Common causes include glibc version mismatches, missing Vulkan drivers, or system out-of-memory (OOM) issues.</p>
+  <summary><strong> La generazione mostra "server is not responding or crashed"</strong></summary>
+  <p>Questo indica che il processo del motore backend locale è terminato. Controlla il terminale di avvio (quello in cui hai eseguito <code>windows.bat</code>, <code>./linux.sh</code> o <code>./mac.sh</code>) per l’errore console esatto. Le cause comuni includono incompatibilità della versione glibc, driver Vulkan mancanti o problemi di memoria insufficiente del sistema (OOM).</p>
 </details>
 
 ---
 
-## <a id="building-from-source"></a>🔨 Building From Source
+## <a id="building-from-source"></a>🔨 Compilazione da sorgente
 
-The setup script (`scripts/setup/setup.sh`) now automates building and setting up the CUDA backend from source when selected. If you want to manually build all backends (CPU, Vulkan, and CUDA) at once, you can run the included `scripts/build/build_from_source.sh` script.
+Lo script di configurazione (`scripts/setup/setup.sh`) ora automatizza la compilazione e la configurazione del backend CUDA da sorgente quando selezionato. Se vuoi compilare manualmente tutti i backend (CPU, Vulkan e CUDA) in una volta sola, puoi eseguire lo script incluso `scripts/build/build_from_source.sh`.
 
-For macOS, the included `scripts/build/build_from_source.sh` builds the Metal backend and copies it to `app/backend/mac/sd`.
+Per macOS, lo script incluso `scripts/build/build_from_source.sh` compila il backend Metal e lo copia in `app/backend/mac/sd`.
 
-### Requirements
-- `git`, `cmake`, `make` (or `ninja`), and a C++17 compiler (`g++` / `clang++`).
-- For **CUDA**: the NVIDIA CUDA toolkit (`nvcc`) must be on your `PATH`.
-- For **Vulkan**: the Vulkan SDK / loader and a compatible driver.
-- For **ROCm**: AMD ROCm development libraries.
-- For **macOS Metal**: Apple Command Line Tools or Xcode.
+### Requisiti
+- `git`, `cmake`, `make` (o `ninja`) e un compilatore C++17 (`g++` / `clang++`).
+- Per **CUDA**: il toolkit NVIDIA CUDA (`nvcc`) deve essere nel tuo `PATH`.
+- Per **Vulkan**: Vulkan SDK / loader e un driver compatibile.
+- Per **ROCm**: librerie di sviluppo AMD ROCm.
+- Per **macOS Metal**: Apple Command Line Tools o Xcode.
 
-### Build commands
+### Comandi di build
 
 ```bash
-# 1. Clone upstream
+# 1. Clona upstream
 git clone https://github.com/leejet/stable-diffusion.cpp.git
 cd stable-diffusion.cpp
 mkdir build && cd build
 
-# 2. Configure for your backend (pick ONE)
-# CPU only
+# 2. Configura per il tuo backend (scegline UNO)
+# Solo CPU
 cmake .. -DSD_BUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release
 
 # CUDA
@@ -294,21 +294,21 @@ cmake .. -DSD_HIPBLAS=ON -DSD_BUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release
 # macOS Metal
 cmake .. -DSD_METAL=ON -DSD_BUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release
 
-# 3. Build
+# 3. Compila
 cmake --build . --config Release -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)
 
-# 4. Copy the binaries into this project
+# 4. Copia i binari in questo progetto
 cp bin/sd* /path/to/Uncensored-AI-Studio/app/backend/linux/<backend>/
 ```
 
-After copying, rename the server binary to match what `scripts/server/serve.cjs` expects:
+Dopo la copia, rinomina il binario server per farlo corrispondere a ciò che `scripts/server/serve.cjs` si aspetta:
 - Vulkan: `sd` → `sd-vulkan`
 - ROCm: `sd` → `sd-rocm`
 
-Then restart the app with `./linux.sh` (Linux) or `./mac.sh` (macOS).
+Poi riavvia l’app con `./linux.sh` (Linux) o `./mac.sh` (macOS).
 
 ---
 
-## <a id="licensing"></a>📝 License
+## <a id="licensing"></a>📝 Licenza
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file. Bundles [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (MIT License). Model weights are subject to their respective creators' licenses.
+Questo progetto è distribuito con licenza MIT - consulta il file [LICENSE](LICENSE). Include [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (licenza MIT). I pesi dei modelli sono soggetti alle licenze dei rispettivi creatori.
