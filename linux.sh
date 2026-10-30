@@ -33,6 +33,42 @@ SETUP_MODE="Repair"
 MAX_PERF_FLAG=""
 SETUP_OPENVINO=0
 
+is_port_in_use() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return
+  fi
+  if command -v nc >/dev/null 2>&1; then
+    nc -z 127.0.0.1 "$port" >/dev/null 2>&1
+    return
+  fi
+  (echo >"/dev/tcp/127.0.0.1/$port") >/dev/null 2>&1
+}
+
+resolve_frontend_port() {
+  local preferred="$1"
+  local port
+
+  if ! is_port_in_use "$preferred"; then
+    echo "$preferred"
+    return 0
+  fi
+
+  for ((port = 1421; port <= 1499; port += 1)); do
+    if [[ "$port" == "$preferred" ]]; then
+      continue
+    fi
+    if ! is_port_in_use "$port"; then
+      echo "$port"
+      return 0
+    fi
+  done
+
+  echo "[ERROR] No free frontend port found. Tried $preferred and 1421-1499." >&2
+  return 1
+}
+
 # Parse args
 for arg in "$@"; do
   case "$arg" in
@@ -165,11 +201,11 @@ if [[ -n "$SETUP_REASON" ]]; then
   echo ""
   read -rp "  Press Enter to continue, or Ctrl+C to cancel."
 
-  # Clear any existing frontend and backend server processes
+  # Clear managed backend ports before setup. Do not kill the frontend port;
+  # launch will select a free frontend port automatically.
   if command -v lsof >/dev/null 2>&1; then
-    lsof -t -i:"${FRONTEND_PORT}" -i:8080 -i:"${LLM_PORT}" | xargs kill -9 >/dev/null 2>&1 || true
+    lsof -t -i:8080 -i:"${LLM_PORT}" | xargs kill -9 >/dev/null 2>&1 || true
   elif command -v fuser >/dev/null 2>&1; then
-    fuser -k "${FRONTEND_PORT}/tcp" >/dev/null 2>&1 || true
     fuser -k "8080/tcp" >/dev/null 2>&1 || true
     fuser -k "${LLM_PORT}/tcp" >/dev/null 2>&1 || true
   fi
@@ -182,6 +218,11 @@ if [[ -n "$SETUP_REASON" ]]; then
   fi
 fi
 
+# ── Keep the llama.cpp backend on the pinned release ──────────────────────
+# Existing installs never re-run setup, so update the text backend when it is older
+# than the release setup-llama.sh installs (backend fixes, new model support).
+bash "$SCRIPT_DIR/scripts/setup/update-llama.sh"
+
 # ── Launch ─────────────────────────────────────────────────────────────────
 clear 2>/dev/null || true
 echo ""
@@ -190,11 +231,16 @@ echo "   UNCENSORED AI STUDIO      |  Launching..."
 echo "  ============================================================"
 echo ""
 
-# Clear frontend and backend ports
+REQUESTED_FRONTEND_PORT="$FRONTEND_PORT"
+FRONTEND_PORT="$(resolve_frontend_port "$REQUESTED_FRONTEND_PORT")"
+if [[ "$FRONTEND_PORT" != "$REQUESTED_FRONTEND_PORT" ]]; then
+  echo "  Frontend port ${REQUESTED_FRONTEND_PORT} is busy; using ${FRONTEND_PORT} instead."
+fi
+
+# Clear managed backend ports
 if command -v lsof >/dev/null 2>&1; then
-  lsof -t -i:"${FRONTEND_PORT}" -i:8080 -i:"${LLM_PORT}" | xargs kill -9 >/dev/null 2>&1 || true
+  lsof -t -i:8080 -i:"${LLM_PORT}" | xargs kill -9 >/dev/null 2>&1 || true
 elif command -v fuser >/dev/null 2>&1; then
-  fuser -k "${FRONTEND_PORT}/tcp" >/dev/null 2>&1 || true
   fuser -k "8080/tcp" >/dev/null 2>&1 || true
   fuser -k "${LLM_PORT}/tcp" >/dev/null 2>&1 || true
 fi

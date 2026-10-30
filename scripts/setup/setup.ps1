@@ -33,6 +33,17 @@ function Print-Info { param([string]$m); Write-Host "   >>  $m" -ForegroundColor
 function Print-Warn { param([string]$m); Write-Host "   !!  $m" -ForegroundColor Yellow }
 function Print-Fail { param([string]$m); Write-Host "   XX  $m" -ForegroundColor Red }
 
+function Get-IntelOpenVinoNpu {
+    Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
+        Where-Object {
+            $name = [string]$_.Name
+            $manufacturer = [string]$_.Manufacturer
+            ($name -match "(?i)Intel.*(?:AI Boost|NPU)") -or
+            (($manufacturer -match "(?i)Intel") -and ($name -match "(?i)(?:AI Boost|\bNPU\b)"))
+        } |
+        Select-Object -First 1
+}
+
 function Format-Bytes {
     param([long]$b)
     if ($b -gt 1GB) { return "{0:N2} GB" -f ($b / 1GB) }
@@ -180,6 +191,57 @@ function Expand-WithProgress {
     Write-Host ""
 }
 
+function Ensure-VisualCppRuntime {
+    $requiredDlls = @(
+        "VCRUNTIME140.dll",
+        "VCRUNTIME140_1.dll",
+        "MSVCP140.dll",
+        "MSVCP140_CODECVT_IDS.dll",
+        "VCOMP140.dll"
+    )
+    $systemDir = Join-Path $env:WINDIR "System32"
+    $missingDlls = @($requiredDlls | Where-Object { -not (Test-Path (Join-Path $systemDir $_)) })
+
+    if ($missingDlls.Count -eq 0) {
+        Print-OK "Microsoft Visual C++ runtime already ready."
+        return
+    }
+
+    Print-Info "Installing the Microsoft Visual C++ runtime required by the Windows backends..."
+    Print-Info "Windows may ask for administrator approval."
+    New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+    $installer = Join-Path $toolsDir "vc_redist.x64.exe"
+    $ok = Invoke-RichDownload `
+        -Url "https://aka.ms/vc14/vc_redist.x64.exe" `
+        -Dest $installer `
+        -Label "Microsoft Visual C++ Redistributable (x64)"
+
+    if (-not $ok) {
+        throw "Cannot download the Microsoft Visual C++ Redistributable. Install https://aka.ms/vc14/vc_redist.x64.exe manually, then run setup again."
+    }
+
+    try {
+        $process = Start-Process `
+            -FilePath $installer `
+            -ArgumentList "/install", "/passive", "/norestart" `
+            -Verb RunAs `
+            -Wait `
+            -PassThru
+        if ($process.ExitCode -notin @(0, 1638, 3010)) {
+            throw "The Microsoft Visual C++ installer exited with code $($process.ExitCode)."
+        }
+    } finally {
+        Remove-Item $installer -Force -ErrorAction SilentlyContinue
+    }
+
+    $missingDlls = @($requiredDlls | Where-Object { -not (Test-Path (Join-Path $systemDir $_)) })
+    if ($missingDlls.Count -gt 0) {
+        throw "The Microsoft Visual C++ runtime is still incomplete. Missing: $($missingDlls -join ', '). Restart Windows, install https://aka.ms/vc14/vc_redist.x64.exe manually, then run setup again."
+    }
+
+    Print-OK "Microsoft Visual C++ runtime installed successfully."
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
 Print-Header
 
@@ -250,6 +312,14 @@ if (-not $nodeReady) {
     Print-OK "Portable Node.js ready: $v"
 }
 
+try {
+    Ensure-VisualCppRuntime
+} catch {
+    Print-Fail $_
+    Read-Host
+    exit 1
+}
+
 # ── Step 2: stable-diffusion.cpp GPU Backend (Dynamic Detection) ──────────────
 $hasNvidia = $false
 try {
@@ -271,18 +341,22 @@ Print-Step 2 $steps "Setting up stable-diffusion.cpp CPU backend (app/backend/wi
 $cpuBackendDest = Join-Path $appDir "backend\win\cpu"
 $cpuBackendExe  = Join-Path $cpuBackendDest "sd-cpu.exe"
 $cpuBackendDll  = Join-Path $cpuBackendDest "stable-diffusion.dll"
+$cpuBackendVersionFile = Join-Path $cpuBackendDest ".backend-version"
+$expectedCpuBackendVersion = "master-782-b290693"
+$installedCpuBackendVersion = if (Test-Path $cpuBackendVersionFile) { (Get-Content $cpuBackendVersionFile -Raw).Trim() } else { "" }
 
-if ((Test-Path $cpuBackendExe) -and (Test-Path $cpuBackendDll)) {
+if ((Test-Path $cpuBackendExe) -and (Test-Path $cpuBackendDll) -and ($installedCpuBackendVersion -eq $expectedCpuBackendVersion)) {
     Print-OK "CPU backend binaries already ready."
 } else {
     $cpuBackendZip = Join-Path $toolsDir "sd-cpu.zip"
     New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+    if (Test-Path $cpuBackendDest) { Remove-Item $cpuBackendDest -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $cpuBackendDest | Out-Null
 
     $ok = Invoke-RichDownload `
-        -Url  "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-721-8caa3f9/sd-master-8caa3f9-bin-win-avx2-x64.zip" `
+        -Url  "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-win-cpu-x64.zip" `
         -Dest $cpuBackendZip `
-        -Label "stable-diffusion.cpp CPU Backend (Windows x64 AVX2)"
+        -Label "stable-diffusion.cpp CPU Backend (Windows x64, runtime dispatch)"
 
     if (-not $ok) { Print-Fail "Cannot download CPU backend binaries."; Read-Host; exit 1 }
 
@@ -310,6 +384,7 @@ if ((Test-Path $cpuBackendExe) -and (Test-Path $cpuBackendDll)) {
     }
 
     if ((Test-Path $cpuBackendExe) -and (Test-Path $cpuBackendDll)) {
+        Set-Content -Path $cpuBackendVersionFile -Value $expectedCpuBackendVersion -Encoding ASCII
         Print-OK "CPU backend binaries installed successfully!"
     } else {
         Print-Fail "Failed to copy backend binaries to app/backend/win/cpu/."
@@ -322,20 +397,24 @@ if ($hasNvidia) {
     $backendDest = Join-Path $appDir "backend\win\cuda"
     $backendExe  = Join-Path $backendDest "sd-cuda.exe"
     $backendDll  = Join-Path $backendDest "stable-diffusion.dll"
+    $backendVersionFile = Join-Path $backendDest ".backend-version"
+    $expectedBackendVersion = "master-782-b290693-cuda12.8.1"
+    $installedBackendVersion = if (Test-Path $backendVersionFile) { (Get-Content $backendVersionFile -Raw).Trim() } else { "" }
     $cudaBackendReady = $false
     
-    if ((Test-Path $backendExe) -and (Test-Path $backendDll)) {
+    if ((Test-Path $backendExe) -and (Test-Path $backendDll) -and ($installedBackendVersion -eq $expectedBackendVersion)) {
         Print-OK "CUDA GPU backend binaries already ready."
         $cudaBackendReady = $true
     } else {
         $backendZip = Join-Path $toolsDir "sd-cuda.zip"
         New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+        if (Test-Path $backendDest) { Remove-Item $backendDest -Recurse -Force }
         New-Item -ItemType Directory -Force -Path $backendDest | Out-Null
 
         $ok = Invoke-RichDownload `
-            -Url  "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-721-8caa3f9/sd-master-8caa3f9-bin-win-cuda12-x64.zip" `
+            -Url  "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-win-cuda12-x64.zip" `
             -Dest $backendZip `
-            -Label "stable-diffusion.cpp CUDA Backend (Windows x64)"
+            -Label "stable-diffusion.cpp CUDA 12.8 Backend (Windows x64)"
 
         if (-not $ok) {
             Print-Warn "Cannot download CUDA backend binaries. Continuing with the Vulkan backend fallback."
@@ -380,12 +459,12 @@ if ($hasNvidia) {
                          (Test-Path (Join-Path $backendDest "cudart64_12.dll"))
 
         if (-not $cudaDllsExist) {
-            Print-Info "CUDA runtime DLLs are missing from backend folder. Downloading portable CUDA v12 runtime..."
+            Print-Info "CUDA runtime DLLs are missing from backend folder. Downloading the matching portable CUDA 12.8 runtime..."
             $dllZip = Join-Path $toolsDir "cuda-dlls.zip"
             $ok = Invoke-RichDownload `
-                -Url  "https://github.com/ggml-org/llama.cpp/releases/download/b9509/cudart-llama-bin-win-cuda-12.4-x64.zip" `
+                -Url  "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/cudart-sd-bin-win-cu12-x64.zip" `
                 -Dest $dllZip `
-                -Label "CUDA v12 Runtime DLLs (llama.cpp)"
+                -Label "CUDA 12.8 Runtime DLLs (stable-diffusion.cpp)"
 
             if ($ok) {
                 Expand-WithProgress -ZipPath $dllZip -Destination $backendDest -Label "CUDA Runtime DLLs"
@@ -395,22 +474,33 @@ if ($hasNvidia) {
                 Print-Warn "Could not download portable CUDA runtime DLLs automatically. If the app fails to start in CUDA mode, you may need to install the CUDA Toolkit manually."
             }
         }
+
+        $cudaDllsExist = (Test-Path (Join-Path $backendDest "cublas64_12.dll")) -and `
+                         (Test-Path (Join-Path $backendDest "cublasLt64_12.dll")) -and `
+                         (Test-Path (Join-Path $backendDest "cudart64_12.dll"))
+        if ($cudaDllsExist) {
+            Set-Content -Path $backendVersionFile -Value $expectedBackendVersion -Encoding ASCII
+        }
     }
 
     Print-Step 2 $steps "Setting up stable-diffusion.cpp Vulkan GPU backend for comparison (app/backend/win/vulkan/)"
     $backendDest = Join-Path $appDir "backend\win\vulkan"
     $backendExe  = Join-Path $backendDest "sd-vulkan.exe"
     $backendDll  = Join-Path $backendDest "stable-diffusion.dll"
+    $backendVersionFile = Join-Path $backendDest ".backend-version"
+    $expectedBackendVersion = "master-685-19bdfe2"
+    $installedBackendVersion = if (Test-Path $backendVersionFile) { (Get-Content $backendVersionFile -Raw).Trim() } else { "" }
 
-    if ((Test-Path $backendExe) -and (Test-Path $backendDll)) {
+    if ((Test-Path $backendExe) -and (Test-Path $backendDll) -and ($installedBackendVersion -eq $expectedBackendVersion)) {
         Print-OK "Vulkan GPU backend binaries already ready."
     } else {
         $backendZip = Join-Path $toolsDir "sd-vulkan.zip"
         New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+        if (Test-Path $backendDest) { Remove-Item $backendDest -Recurse -Force }
         New-Item -ItemType Directory -Force -Path $backendDest | Out-Null
 
         $ok = Invoke-RichDownload `
-            -Url  "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-669-2d40a8b/sd-master-2d40a8b-bin-win-vulkan-x64.zip" `
+            -Url  "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-685-19bdfe2/sd-master-19bdfe2-bin-win-vulkan-x64.zip" `
             -Dest $backendZip `
             -Label "stable-diffusion.cpp Vulkan Backend (Windows x64)"
 
@@ -440,6 +530,7 @@ if ($hasNvidia) {
         }
 
         if ((Test-Path $backendExe) -and (Test-Path $backendDll)) {
+            Set-Content -Path $backendVersionFile -Value $expectedBackendVersion -Encoding ASCII
             Print-OK "Vulkan GPU backend binaries installed successfully!"
         } else {
             Print-Fail "Failed to copy backend binaries to app/backend/win/vulkan/."
@@ -451,16 +542,20 @@ if ($hasNvidia) {
     $backendDest = Join-Path $appDir "backend\win\vulkan"
     $backendExe  = Join-Path $backendDest "sd-vulkan.exe"
     $backendDll  = Join-Path $backendDest "stable-diffusion.dll"
+    $backendVersionFile = Join-Path $backendDest ".backend-version"
+    $expectedBackendVersion = "master-685-19bdfe2"
+    $installedBackendVersion = if (Test-Path $backendVersionFile) { (Get-Content $backendVersionFile -Raw).Trim() } else { "" }
     
-    if ((Test-Path $backendExe) -and (Test-Path $backendDll)) {
+    if ((Test-Path $backendExe) -and (Test-Path $backendDll) -and ($installedBackendVersion -eq $expectedBackendVersion)) {
         Print-OK "Vulkan GPU backend binaries already ready."
     } else {
         $backendZip = Join-Path $toolsDir "sd-vulkan.zip"
         New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+        if (Test-Path $backendDest) { Remove-Item $backendDest -Recurse -Force }
         New-Item -ItemType Directory -Force -Path $backendDest | Out-Null
 
         $ok = Invoke-RichDownload `
-            -Url  "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-669-2d40a8b/sd-master-2d40a8b-bin-win-vulkan-x64.zip" `
+            -Url  "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-685-19bdfe2/sd-master-19bdfe2-bin-win-vulkan-x64.zip" `
             -Dest $backendZip `
             -Label "stable-diffusion.cpp Vulkan Backend (Windows x64)"
 
@@ -492,6 +587,7 @@ if ($hasNvidia) {
         }
 
         if ((Test-Path $backendExe) -and (Test-Path $backendDll)) {
+            Set-Content -Path $backendVersionFile -Value $expectedBackendVersion -Encoding ASCII
             Print-OK "Vulkan GPU backend binaries installed successfully!"
         } else {
             Print-Fail "Failed to copy backend binaries to app/backend/win/vulkan/."
@@ -522,19 +618,20 @@ if (-not $?) {
     Read-Host; exit 1
 }
 
-$npu = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -like "*Intel(R) AI Boost*" -or ($_.Name -match "NPU" -and $_.PNPClass -eq "ComputeAccelerator") } |
-    Select-Object -First 1
+$npu = Get-IntelOpenVinoNpu
 
 Print-Step 6 $steps "Setting up portable OpenVINO NPU runtime"
 if ($npu) {
-    & (Join-Path $scriptDir "setup-openvino-npu.ps1")
-    if (-not $?) {
-        Print-Fail "OpenVINO NPU setup failed."
-        Read-Host; exit 1
+    try {
+        & (Join-Path $scriptDir "setup-openvino-npu.ps1")
+        if (-not $?) {
+            throw "OpenVINO NPU setup returned a failure status."
+        }
+    } catch {
+        Print-Warn "OpenVINO NPU setup failed. Continuing with the available GPU/CPU backends. $($_.Exception.Message)"
     }
 } else {
-    Print-Info "Intel AI Boost NPU not detected. Skipping OpenVINO NPU runtime."
+    Print-Info "Compatible Intel AI Boost NPU not detected. Skipping the optional OpenVINO NPU runtime."
 }
 
 Print-Step 7 $steps "Installing frontend dependencies (app/frontend/)"

@@ -705,6 +705,17 @@ function Generator({
                 />
               </div>
 
+              <div className="m3-text-field">
+                <label className="m3-text-field-label">Negative Prompt (Optional)</label>
+                <textarea
+                  className="m3-textarea"
+                  value={negativePrompt}
+                  onChange={(e) => setNegativePrompt(e.target.value)}
+                  placeholder="Describe details to avoid (e.g. blurry, distorted hands, text, watermark)..."
+                  disabled={isGenerating}
+                />
+              </div>
+
               {constraints.backendType !== "apple-npu" && constraints.backendType !== "openvino-npu" && (
                 <div className="m3-text-field">
                   <label className="m3-text-field-label">Base Image (Optional)</label>

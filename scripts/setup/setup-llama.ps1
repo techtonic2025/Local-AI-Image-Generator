@@ -1,4 +1,4 @@
-param([string]$Release = "b9668")
+param([string]$Release = "b11418")
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -118,9 +118,15 @@ function Install-LlamaArchive {
 
     $dest = Join-Path $llmRoot $Variant
     $server = Join-Path $dest "llama-server.exe"
+    $stamp = Join-Path $dest ".llama-release"
     if (Test-Path $server) {
-        Write-Host "   OK  llama.cpp $Variant backend already ready."
-        return
+        $installedRelease = ""
+        if (Test-Path $stamp) { $installedRelease = (Get-Content $stamp -Raw).Trim() }
+        if ($installedRelease -eq $Release) {
+            Write-Host "   OK  llama.cpp $Variant backend already ready ($Release)."
+            return
+        }
+        Write-Host "   >>  Updating llama.cpp $Variant backend to $Release (installed: $(if ($installedRelease) { $installedRelease } else { 'unknown' }))..."
     }
 
     $archive = Join-Path $toolsDir $AssetName
@@ -134,6 +140,10 @@ function Install-LlamaArchive {
 
     Write-Host "   >>  Extracting llama.cpp $Variant backend..."
     Expand-Archive -Path $archive -DestinationPath $extract -Force
+
+    # Clear the previous release first so stale DLLs from an older layout (monolithic vs
+    # modular *-impl.dll / mtmd.dll builds) are not mixed with the new files.
+    Get-ChildItem $dest -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
     Get-ChildItem $extract -Recurse -File | ForEach-Object {
         Copy-Item $_.FullName (Join-Path $dest $_.Name) -Force
@@ -162,6 +172,7 @@ function Install-LlamaArchive {
     if (-not (Test-Path $server)) {
         throw "llama-server.exe was not found after extracting $AssetName"
     }
+    Set-Content -Path $stamp -Value $Release -Encoding ASCII
     Write-Host "   OK  llama.cpp $Variant backend installed."
 }
 
@@ -206,7 +217,7 @@ try {
     }
 } catch {}
 if ($hasAmd) {
-    Try-InstallLlamaArchive -Variant "hip" -AssetName "llama-$Release-bin-win-hip-x64.zip" -Reason "AMD HIP acceleration"
+    Try-InstallLlamaArchive -Variant "hip" -AssetName "llama-$Release-bin-win-rocm-10.0-x64.zip" -Reason "AMD HIP acceleration"
 }
 # Intel Arc/Graphics detection for SYCL backend
 $hasIntel = $false

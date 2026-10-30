@@ -9,16 +9,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$SCRIPT_DIR/app"
 PLATFORM="$(uname -s)"
+ARCH="$(uname -m)"
 
 if [[ "$PLATFORM" != "Darwin" ]]; then
   echo "[ERROR] This script is for macOS only. Please run ./linux.sh on Linux." >&2
   exit 1
 fi
 
+if [[ "$(sysctl -in hw.optional.arm64 2>/dev/null || true)" == "1" ]]; then
+  ARCH="arm64"
+fi
+
 NODE_DIR="$APP_DIR/tools/node-mac"
 NODE_BIN="$NODE_DIR/bin/node"
 BACKEND_PATH="$APP_DIR/backend/mac/sd"
-if [[ "$(uname -m)" == "arm64" ]]; then
+if [[ "$ARCH" == "arm64" ]]; then
   LLM_BACKEND_PATH="$APP_DIR/llm-backend/mac/arm64/llama-server"
 else
   LLM_BACKEND_PATH="$APP_DIR/llm-backend/mac/x64/llama-server"
@@ -36,6 +41,42 @@ LLM_PORT="${LLM_PORT:-10086}"
 SETUP_REASON=""
 SETUP_MODE="Repair"
 
+is_port_in_use() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return
+  fi
+  if command -v nc >/dev/null 2>&1; then
+    nc -z 127.0.0.1 "$port" >/dev/null 2>&1
+    return
+  fi
+  (echo >"/dev/tcp/127.0.0.1/$port") >/dev/null 2>&1
+}
+
+resolve_frontend_port() {
+  local preferred="$1"
+  local port
+
+  if ! is_port_in_use "$preferred"; then
+    echo "$preferred"
+    return 0
+  fi
+
+  for ((port = 1421; port <= 1499; port += 1)); do
+    if [[ "$port" == "$preferred" ]]; then
+      continue
+    fi
+    if ! is_port_in_use "$port"; then
+      echo "$port"
+      return 0
+    fi
+  done
+
+  echo "[ERROR] No free frontend port found. Tried $preferred and 1421-1499." >&2
+  return 1
+}
+
 # ── Setup node_modules to avoid OS conflicts ────────────────────────────────
 FRONTEND_NODE_MODULES="$APP_DIR/frontend/node_modules"
 MAC_NODE_MODULES="$APP_DIR/frontend/node_modules_mac"
@@ -50,6 +91,12 @@ if ln -s "node_modules_mac" "$TEST_LINK" 2>/dev/null; then
 else
   USE_SYMLINKS=false
 fi
+# macOS fakes symlinks on exFAT/FAT drives, and Linux and Windows see them as plain
+# files. Use the directory swap there too, so every OS agrees on what node_modules is.
+APP_DEVICE="$(stat -f %Sd "$APP_DIR" 2>/dev/null || true)"
+case "$(mount | awk -v d="/dev/$APP_DEVICE" '$1 == d { sub(/^[^(]*\(/, ""); sub(/,.*$/, ""); print; exit }')" in
+  exfat|msdos) USE_SYMLINKS=false ;;
+esac
 
 if [ "$USE_SYMLINKS" = true ]; then
   if [[ -d "$FRONTEND_NODE_MODULES" && ! -L "$FRONTEND_NODE_MODULES" ]]; then
@@ -137,11 +184,11 @@ if [[ -n "$SETUP_REASON" ]]; then
   echo ""
   read -rp "  Press Enter to continue, or Ctrl+C to cancel."
 
-  # Clear any existing frontend and backend server processes
+  # Clear managed backend ports before setup. Do not kill the frontend port;
+  # launch will select a free frontend port automatically.
   if command -v lsof >/dev/null 2>&1; then
-    lsof -t -i:"${FRONTEND_PORT}" -i:8080 -i:"${LLM_PORT}" | xargs kill -9 >/dev/null 2>&1 || true
+    lsof -t -i:8080 -i:"${LLM_PORT}" | xargs kill -9 >/dev/null 2>&1 || true
   elif command -v fuser >/dev/null 2>&1; then
-    fuser -k "${FRONTEND_PORT}/tcp" >/dev/null 2>&1 || true
     fuser -k "8080/tcp" >/dev/null 2>&1 || true
     fuser -k "${LLM_PORT}/tcp" >/dev/null 2>&1 || true
   fi
@@ -154,6 +201,11 @@ if [[ -n "$SETUP_REASON" ]]; then
   fi
 fi
 
+# ── Keep the llama.cpp backend on the pinned release ──────────────────────
+# Existing installs never re-run setup, so update the text backend when it is older
+# than the release setup-llama.sh installs (backend fixes, new model support).
+bash "$SCRIPT_DIR/scripts/setup/update-llama.sh"
+
 # ── Launch ─────────────────────────────────────────────────────────────────
 clear 2>/dev/null || true
 echo ""
@@ -162,11 +214,16 @@ echo "   UNCENSORED AI STUDIO      |  Launching..."
 echo "  ============================================================"
 echo ""
 
-# Clear frontend and backend ports
+REQUESTED_FRONTEND_PORT="$FRONTEND_PORT"
+FRONTEND_PORT="$(resolve_frontend_port "$REQUESTED_FRONTEND_PORT")"
+if [[ "$FRONTEND_PORT" != "$REQUESTED_FRONTEND_PORT" ]]; then
+  echo "  Frontend port ${REQUESTED_FRONTEND_PORT} is busy; using ${FRONTEND_PORT} instead."
+fi
+
+# Clear managed backend ports
 if command -v lsof >/dev/null 2>&1; then
-  lsof -t -i:"${FRONTEND_PORT}" -i:8080 -i:"${LLM_PORT}" | xargs kill -9 >/dev/null 2>&1 || true
+  lsof -t -i:8080 -i:"${LLM_PORT}" | xargs kill -9 >/dev/null 2>&1 || true
 elif command -v fuser >/dev/null 2>&1; then
-  fuser -k "${FRONTEND_PORT}/tcp" >/dev/null 2>&1 || true
   fuser -k "8080/tcp" >/dev/null 2>&1 || true
   fuser -k "${LLM_PORT}/tcp" >/dev/null 2>&1 || true
 fi

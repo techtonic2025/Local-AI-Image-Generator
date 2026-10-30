@@ -84,8 +84,8 @@ Modelli immagine noti e funzionanti disponibili dal Model Manager:
 
 | Nome | Nome file | Tipo | Dimensione approx. | Uso consigliato |
 | :--- | :--- | :--- | :--- | :--- |
-| Juggernaut XL v9 Lightning | `Juggernaut_RunDiffusionPhoto2_Lightning_4Steps.safetensors` | SDXL | 6,6 GB | Fotorealismo di alta qualità su macchine di fascia media/alta. |
-| DreamShaper XL Lightning | `DreamShaperXL_Lightning.safetensors` | SDXL | 6,6 GB | Immagini SDXL generiche, fantasy, render e illustrazione. |
+| Juggernaut XL v9 Lightning | `Juggernaut_RunDiffusionPhoto2_Lightning_4Steps.safetensors` | SDXL | 7,1 GB | Fotorealismo di alta qualità su macchine di fascia media/alta. |
+| DreamShaper XL Lightning | `DreamShaperXL_Lightning.safetensors` | SDXL | 6,9 GB | Immagini SDXL generiche, fantasy, render e illustrazione. |
 | DreamShaper 8 | `DreamShaper_8_pruned.safetensors` | SD 1.5 | 2,1 GB | Generazione immagini più veloce e con meno memoria. |
 | CyberRealistic V8 | `CyberRealistic_V8_FP16.safetensors` | SD 1.5 | 2,0 GB | Immagini realistiche SD 1.5 e sistemi con meno memoria. |
 | Rev Animated | `rev-animated-v1-2-2.safetensors` | SD 1.5 | 2,0 GB | Immagini stilizzate/anime SD 1.5. |
@@ -200,6 +200,7 @@ Assicurati di avere installato un browser web moderno. Segui la guida rapida qui
 > **Requisiti di sistema e note:**
 > - È richiesto **Windows 10 o Windows 11 a 64 bit** per il runtime Node.js 22 portatile usato dal launcher Windows.
 > - È richiesto **glibc 2.38 o più recente** per i backend Linux precompilati (Ubuntu 24.04, Fedora 40+, ecc.). Lo script di configurazione ti avviserà se la tua glibc è più vecchia.
+> - **Librerie runtime Linux:** i backend precompilati richiedono `libgomp.so.1`; Vulkan richiede anche `libvulkan.so.1` e un driver GPU funzionante. Lo script di configurazione ora le controlla prima di installare un backend e, se ne manca una, mostra il comando esatto per installarla sulla tua distribuzione.
 > - **Linux OpenVINO NPU:** sono richiesti Intel Core Ultra, Linux x86_64, kernel 6.6+, un dispositivo `/dev/accel/accel0` funzionante, Python 3 con `venv` e il driver Intel Linux NPU.
 
 ---
@@ -222,6 +223,11 @@ Assicurati di avere installato un browser web moderno. Segui la guida rapida qui
 </details>
 
 <details>
+  <summary><strong> Aprire lo studio da un altro dispositivo della tua rete</strong></summary>
+  <p>L’interfaccia web accetta connessioni solo dal computer su cui gira, perché non ha un login. Per raggiungerla di proposito da un altro dispositivo, avviala con <code>UAIS_HOST=0.0.0.0</code> (per esempio <code>UAIS_HOST=0.0.0.0 ./linux.sh</code>, oppure <code>set UAIS_HOST=0.0.0.0</code> prima di eseguire <code>windows.bat</code>). Chiunque sia su quella rete potrà usarla.</p>
+</details>
+
+<details>
   <summary><strong> Linux ROCm non si carica per GPU AMD Radeon</strong></summary>
   <p>Assicurati che l’hardware della tua GPU AMD e il kernel host siano pienamente compatibili con ROCm 7.13. Se ROCm non riesce a inizializzarsi correttamente, l’applicazione passerà automaticamente all’accelerazione Vulkan.</p>
 </details>
@@ -235,9 +241,15 @@ Assicurati di avere installato un browser web moderno. Segui la guida rapida qui
   <summary><strong> Windows esce con codice <code>3221225781</code> (0xC0000135)</strong></summary>
   <p>Questo codice significa che Windows non è riuscito a trovare una DLL backend richiesta:</p>
   <ul>
-    <li><strong>Per AMD/Intel Vulkan:</strong> aggiorna il driver GPU a una versione con supporto completo al runtime Vulkan, poi riesegui lo script di configurazione per ripristinare <code>app/backend/win/vulkan/</code>.</li>
+    <li><strong>Per AMD/Intel Vulkan:</strong> riesegui <code>scripts/setup/setup.ps1</code>. Il setup installa il runtime Microsoft Visual C++ x64 necessario e sostituisce i binari Vulkan obsoleti con la build compatibile. Approva la richiesta di amministratore di Windows quando compare.</li>
     <li><strong>Per NVIDIA CUDA:</strong> installa o aggiorna il driver grafico NVIDIA, poi riesegui lo script di configurazione per ripristinare le DLL runtime CUDA.</li>
   </ul>
+  <p>Se il setup non riesce a installare il runtime, installa manualmente il <a href="https://aka.ms/vc14/vc_redist.x64.exe">Visual C++ Redistributable x64</a> ufficiale di Microsoft, riavvia Windows e riesegui il setup.</p>
+</details>
+
+<details>
+  <summary><strong> Windows esce con codice <code>3221225501</code> (0xC000001D) / "Model Load Failed"</strong></summary>
+  <p>È un’istruzione CPU non supportata, dovuta a una vecchia build del backend Windows compilata per processori più recenti (succede ad esempio con CPU Intel di terza/quarta generazione). Non significa che il modello o la GPU non siano supportati. Riesegui <code>scripts/setup/setup.ps1</code>: sostituisce i binari CPU/CUDA con build che si adattano al processore in uso e installa il runtime CUDA 12.8 corrispondente (compatibile anche con le RTX serie 50).</p>
 </details>
 
 <details>
@@ -256,7 +268,7 @@ Per macOS, lo script incluso `scripts/build/build_from_source.sh` compila il bac
 ### Requisiti
 - `git`, `cmake`, `make` (o `ninja`) e un compilatore C++17 (`g++` / `clang++`).
 - Per **CUDA**: il toolkit NVIDIA CUDA (`nvcc`) deve essere nel tuo `PATH`.
-- Per **Vulkan**: Vulkan SDK / loader e un driver compatibile.
+- Per **Vulkan**: Vulkan SDK / loader, un driver compatibile e `glslc` (pacchetto Ubuntu/Debian: `glslc`).
 - Per **ROCm**: librerie di sviluppo AMD ROCm.
 - Per **macOS Metal**: Apple Command Line Tools o Xcode.
 

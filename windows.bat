@@ -1,4 +1,5 @@
 @echo off
+setlocal EnableExtensions EnableDelayedExpansion
 title Uncensored AI Studio
 cd /d "%~dp0"
 
@@ -22,7 +23,7 @@ if "%LLM_PORT%"=="" set LLM_PORT=10086
 set SETUP_REASON=
 set SETUP_MODE=Repair
 
-:: ── First-time setup check ────────────────────────────────────────────────────
+:: -- First-time setup check ----------------------------------------------------
 if not exist "%APP%\tools\node-win" set SETUP_MODE=First-Time Setup
 if not exist "%NODE%" (
     set SETUP_REASON=Portable Node.js is missing.
@@ -70,8 +71,8 @@ echo.
 echo  Press any key to continue, or Ctrl+C to cancel.
 pause >nul
 
-:: Clear old frontend and backend server processes before setup so app/tools/node-win can be replaced
-for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":%FRONTEND_PORT% "') do taskkill /f /pid %%a >nul 2>nul
+:: Clear old managed backend processes before setup so app/tools/node-win can be replaced.
+:: Do not kill the frontend port; launch will select a free frontend port automatically.
 for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":8080 "') do taskkill /f /pid %%a >nul 2>nul
 for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":%LLM_PORT% "') do taskkill /f /pid %%a >nul 2>nul
 
@@ -86,17 +87,23 @@ if errorlevel 1 (
 :: After setup, continue to launch
 goto :launch
 
-:: ── Launch ────────────────────────────────────────────────────────────────────
+:: -- Launch -------------------------------------------------------------------
 :launch
+:: Keep the llama.cpp backend on the pinned release (existing installs never re-run setup).
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\setup\update-llama.ps1"
 echo.
 echo  ============================================================
 echo   UNCENSORED AI STUDIO      ^|  Launching...
 echo  ============================================================
 echo.
 
-:: Clear frontend and backend ports to prevent address conflicts.
-echo  Clearing frontend port %FRONTEND_PORT%, backend port 8080, and text port %LLM_PORT%...
-for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":%FRONTEND_PORT% "') do taskkill /f /pid %%a >nul 2>nul
+set "REQUESTED_FRONTEND_PORT=%FRONTEND_PORT%"
+call :resolve_frontend_port
+if errorlevel 1 exit /b 1
+if not "%FRONTEND_PORT%"=="%REQUESTED_FRONTEND_PORT%" echo  Frontend port %REQUESTED_FRONTEND_PORT% is busy; using %FRONTEND_PORT% instead.
+
+:: Clear managed backend ports to prevent stale API conflicts.
+echo  Clearing backend port 8080 and text port %LLM_PORT%...
 for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":8080 "') do taskkill /f /pid %%a >nul 2>nul
 for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":%LLM_PORT% "') do taskkill /f /pid %%a >nul 2>nul
 
@@ -119,3 +126,28 @@ echo  ============================================================
 echo.
 
 "%NODE%" "%SERVE%"
+exit /b %ERRORLEVEL%
+
+:resolve_frontend_port
+call :is_port_available "%FRONTEND_PORT%"
+if "%PORT_AVAILABLE%"=="1" exit /b 0
+
+for /L %%p in (1421,1,1499) do (
+    if not "%%p"=="%FRONTEND_PORT%" (
+        call :is_port_available "%%p"
+        if "!PORT_AVAILABLE!"=="1" (
+            set "FRONTEND_PORT=%%p"
+            exit /b 0
+        )
+    )
+)
+
+echo  [ERROR] No free frontend port found. Tried %FRONTEND_PORT% and 1421-1499.
+exit /b 1
+
+:is_port_available
+set "PORT_AVAILABLE=1"
+for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":%~1 " ^| findstr /I "LISTENING"') do (
+    set "PORT_AVAILABLE=0"
+)
+exit /b 0

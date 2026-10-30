@@ -8,10 +8,18 @@ import {
   startLlm,
   stopLlm,
 } from "../services/api";
+import katex from "katex";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import "katex/dist/katex.min.css";
 
-const processMessageContent = (rawText, apiReasoning = "", enableThinking = true) => {
+// Splits model reasoning from the answer. Reasoning is always extracted (and shown collapsed
+// when Deep Think is off), because some models think even when it was not requested.
+const processMessageContent = (rawText, apiReasoning = "") => {
   if (typeof rawText !== "string") {
     return { content: rawText, reasoning: apiReasoning || "" };
+  }
+  if (apiReasoning) {
+    return { content: rawText.replace(/<\/?think>/g, "").trim(), reasoning: String(apiReasoning).trim() };
   }
 
   const cleanReasoningControlTags = (value) => String(value || "")
@@ -19,16 +27,12 @@ const processMessageContent = (rawText, apiReasoning = "", enableThinking = true
     .replace(/<\|channel\|>model/g, "")
     .replace(/<\|turn\|>model/g, "")
     .replace(/<\|im_start\|>model/g, "")
-    .replace(/<\|think\|>|<\|thought\|>|<thinking>|<thought>/g, "")
-    .replace(/<\|\/think\|>|<\|\/thought\|>|<\/thinking>|<\/thought>/g, "")
+    .replace(/<\|think\|>|<\|thought\|>|<think>|<thinking>|<thought>/g, "")
+    .replace(/<\|\/think\|>|<\|\/thought\|>|<\/think>|<\/thinking>|<\/thought>/g, "")
     .trim();
 
-  const startTags = ["<|channel|>thought", "<|think|>", "<|thought|>", "<thinking>", "<thought>"];
-  const endTags = ["<|channel|>model", "<|turn>model", "<|im_start|>model", "</thinking>", "</thought>", "<|/think|>", "<|/thought|>"];
-
-  if (!enableThinking) {
-    return { content: cleanReasoningControlTags(rawText), reasoning: "" };
-  }
+  const startTags = ["<|channel|>thought", "<|think|>", "<|thought|>", "<think>", "<thinking>", "<thought>"];
+  const endTags = ["<|channel|>model", "<|turn>model", "<|im_start|>model", "</think>", "</thinking>", "</thought>", "<|/think|>", "<|/thought|>"];
 
   let startIdx = -1;
   let matchedStartTag = "";
@@ -261,23 +265,31 @@ function TextChat({
 
     files.forEach((file) => {
       if (isImage(file)) {
+        if (!supportsVision) {
+          showAlert({
+            title: "Vision Model Required",
+            message: "To attach images, please select and load a multimodal/vision model with an mmproj file.",
+            danger: true,
+          });
+          return;
+        }
         optimizeImageForVision(file)
           .then((image) => {
-          setAttachments((prev) => [
-            ...prev,
-            {
-              id: Math.random().toString(36).substring(7),
-              file,
-              type: "image",
-              name: file.name,
+            setAttachments((prev) => [
+              ...prev,
+              {
+                id: Math.random().toString(36).substring(7),
+                file,
+                type: "image",
+                name: file.name,
                 dataUrl: image.previewDataUrl,
                 sendDataUrl: image.sendDataUrl,
                 width: image.width,
                 height: image.height,
                 originalWidth: image.originalWidth,
                 originalHeight: image.originalHeight,
-            },
-          ]);
+              },
+            ]);
           })
           .catch((err) => {
             showAlert({ title: "Image Error", message: err.message || String(err), danger: true });
@@ -297,10 +309,30 @@ function TextChat({
           ]);
         };
         reader.readAsText(file);
+      } else if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
+        extractPdfText(file)
+          .then((text) => {
+            if (!text.trim()) {
+              throw new Error(`"${file.name}" has no extractable text (it may be a scanned image). Export the pages as images and attach those to a vision model instead.`);
+            }
+            setAttachments((prev) => [
+              ...prev,
+              {
+                id: Math.random().toString(36).substring(7),
+                file,
+                type: "document",
+                name: file.name,
+                content: text,
+              },
+            ]);
+          })
+          .catch((err) => {
+            showAlert({ title: "PDF Error", message: err.message || String(err), danger: true });
+          });
       } else {
         showAlert({
           title: "Unsupported File",
-          message: `File "${file.name}" is not supported. Please select an image (JPEG, PNG, WEBP) or a text/code file.`,
+          message: `File "${file.name}" is not supported. Please select an image (JPEG, PNG, WEBP), a PDF, or a text/code file.`,
           danger: true,
         });
       }
@@ -451,13 +483,16 @@ function TextChat({
     const lastMessage = messages[len - 1];
     const isNewUserMessage = len > prevLen && lastMessage?.role === "user";
 
+    // Scroll only the message list. scrollIntoView() also scrolls every scrollable
+    // ancestor, which pushed the header and composer off screen while streaming.
+    const scrollToBottom = () => container.scrollTo({ top: container.scrollHeight });
     if (isNewUserMessage || followGenerationRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      scrollToBottom();
     } else {
       const threshold = 150;
       const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= threshold;
       if (isNearBottom) {
-        bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+        scrollToBottom();
       }
     }
   }, [messages, isBusy, loadingModel]);
@@ -683,7 +718,7 @@ function TextChat({
           : Math.max(0.05, (now - requestStartedAt) / 1000);
         
         rawAssistantText = fullText;
-        const processed = processMessageContent(fullText, fullReasoning, deepThinkEnabled);
+        const processed = processMessageContent(fullText, fullReasoning);
         assistantText = processed.content;
         assistantReasoning = processed.reasoning;
 
@@ -763,7 +798,7 @@ function TextChat({
         truncated: response.finishReason === "length",
       };
       
-      const processed = processMessageContent(response.content || rawAssistantText || assistantText, response.reasoningContent || assistantReasoning, deepThinkEnabled);
+      const processed = processMessageContent(response.content || rawAssistantText || assistantText, response.reasoningContent || assistantReasoning);
       const finalMessages = [...nextMessages, {
         role: "assistant",
         content: processed.content,
@@ -1045,8 +1080,7 @@ function TextChat({
               {messages.map((message, index) => {
                 const processed = processMessageContent(
                   Array.isArray(message.content) ? "" : (message.content || ""),
-                  message.reasoning || "",
-                  deepThinkEnabled
+                  message.reasoning || ""
                 );
                 const displayContent = Array.isArray(message.content) ? message.content : processed.content;
                 const displayReasoning = processed.reasoning;
@@ -1069,10 +1103,10 @@ function TextChat({
                       <span className="chat-sender-label">
                         {message.role === "user" ? "You" : "Local AI"}
                       </span>
-                      {message.role === "assistant" && displayReasoning && deepThinkEnabled && (
-                        <ThinkingBlock
+                      {message.role === "assistant" && displayReasoning && (
+                        <ChatThinkingSection
                           reasoning={displayReasoning}
-                          thinkingDuration={message.thinkingDuration}
+                          timeElapsed={Number(message.thinkingDuration) || 0}
                           isComplete={!message.generationStats || message.generationStats.status === "complete"}
                         />
                       )}
@@ -1214,8 +1248,8 @@ function TextChat({
                 <button
                   className="chat-composer-attach-btn"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={!supportsVision || isBusy}
-                  title={supportsVision ? "Attach files or images" : visionStatus}
+                  disabled={!status.ready || isBusy}
+                  title={status.ready ? "Attach files (text/code) or images (vision models only)" : "Select and load a GGUF model to attach files"}
                 >
                   <Paperclip size={17} />
                 </button>
@@ -1269,11 +1303,45 @@ function TextChat({
     </div>
   );
 }
+// PDF text is extracted in the browser, so PDFs work with every model, not only vision ones.
+// pdf.js is loaded on first use to keep it out of the main bundle.
+async function extractPdfText(file) {
+  const pdfjs = await import("pdfjs-dist");
+  pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+  const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+  const pages = [];
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const textContent = await page.getTextContent();
+    const text = textContent.items.map((item) => (item.str || "") + (item.hasEOL ? "\n" : " ")).join("").trim();
+    if (text) pages.push(`[Page ${pageNumber}]\n${text}`);
+  }
+  await pdf.destroy();
+  return pages.join("\n\n");
+}
+
+function MathFormula({ tex, display = false }) {
+  const html = katex.renderToString(tex, { displayMode: display, throwOnError: false, output: "html" });
+  return display
+    ? <div className="chat-math-block" dangerouslySetInnerHTML={{ __html: html }} />
+    : <span dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+// Inline math: \( ... \) or $...$ (no space just inside the dollars and no digit right
+// after the closing one, so prices like "$5 and $10" stay plain text).
+const INLINE_MATH = String.raw`\\\(.+?\\\)|\$(?:[^\s$]|[^\s$][^$\n]*?[^\s$])\$(?!\d)`;
+
 function parseInlineMarkdown(text) {
-  const regex = /(\*\*.*?\*\*|`.*?`|\*.*?\*|\[.*?\]\(.*?\))/g;
+  const regex = new RegExp(`(${INLINE_MATH}|\\*\\*.*?\\*\\*|\`.*?\`|\\*.*?\\*|\\[.*?\\]\\(.*?\\))`, "g");
   const parts = text.split(regex);
 
   return parts.map((part, idx) => {
+    if (part.length > 4 && part.startsWith("\\(") && part.endsWith("\\)")) {
+      return <MathFormula key={idx} tex={part.slice(2, -2)} />;
+    }
+    if (part.length > 2 && part.startsWith("$") && part.endsWith("$")) {
+      return <MathFormula key={idx} tex={part.slice(1, -1)} />;
+    }
     if (part.startsWith("**") && part.endsWith("**")) {
       return <strong key={idx} style={{ fontWeight: 700 }}>{part.slice(2, -2)}</strong>;
     }
@@ -1306,11 +1374,19 @@ function parseInlineMarkdown(text) {
 export function MarkdownRenderer({ content }) {
   if (typeof content !== 'string') return null;
 
-  const parts = content.split(/(```[\s\S]*?```)/g);
+  const parts = content.split(/(```[\s\S]*?```|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\])/g);
+  const isTableSeparator = (line) => /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/.test(line.trim());
+  const splitTableRow = (line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
 
   return (
     <div className="markdown-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
       {parts.map((part, index) => {
+        if (part.length > 4 && part.startsWith("$$") && part.endsWith("$$")) {
+          return <MathFormula key={index} tex={part.slice(2, -2).trim()} display />;
+        }
+        if (part.length > 4 && part.startsWith("\\[") && part.endsWith("\\]")) {
+          return <MathFormula key={index} tex={part.slice(2, -2).trim()} display />;
+        }
         if (part.startsWith("```") && part.endsWith("```")) {
           const match = part.match(/```(\w*)\n([\s\S]*?)```/);
           const lang = match ? match[1] : "";
@@ -1342,7 +1418,18 @@ export function MarkdownRenderer({ content }) {
             const line = rawLines[i];
             const trimmed = line.trim();
 
-            if (trimmed.startsWith("### ")) {
+            if (trimmed.startsWith("|") && i + 1 < rawLines.length && isTableSeparator(rawLines[i + 1])) {
+              if (currentBlock) { blocks.push(currentBlock); currentBlock = null; }
+              const header = splitTableRow(line);
+              const rows = [];
+              i += 2;
+              while (i < rawLines.length && rawLines[i].trim().startsWith("|")) {
+                rows.push(splitTableRow(rawLines[i]));
+                i += 1;
+              }
+              i -= 1;
+              blocks.push({ type: "table", header, rows });
+            } else if (trimmed.startsWith("### ")) {
               if (currentBlock) { blocks.push(currentBlock); currentBlock = null; }
               blocks.push({ type: "h4", content: trimmed.slice(4) });
             } else if (trimmed.startsWith("## ")) {
@@ -1409,6 +1496,23 @@ export function MarkdownRenderer({ content }) {
                       <li key={itemIdx} style={{ fontSize: "0.9rem", lineHeight: 1.5, marginBottom: "4px", display: "list-item" }}>{parseInlineMarkdown(item)}</li>
                     ))}
                   </ol>
+                );
+              case "table":
+                return (
+                  <div key={blockIdx} className="chat-table-wrap">
+                    <table className="chat-table">
+                      <thead>
+                        <tr>{block.header.map((cell, cellIdx) => <th key={cellIdx}>{parseInlineMarkdown(cell)}</th>)}</tr>
+                      </thead>
+                      <tbody>
+                        {block.rows.map((row, rowIdx) => (
+                          <tr key={rowIdx}>
+                            {block.header.map((_, cellIdx) => <td key={cellIdx}>{parseInlineMarkdown(row[cellIdx] || "")}</td>)}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 );
               case "spacer":
                 return <div key={blockIdx} style={{ height: "6px" }} />;

@@ -3838,3 +3838,35 @@ html[data-theme^="dark"] .settings-subsection:hover {
   animation: fadeInSlide 0.3s var(--md-transition-easing);
 }
 
+
+/* ─── Chat Markdown: tables and math ─────────────────────────── */
+.chat-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+
+.chat-table {
+  border-collapse: collapse;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.chat-table th,
+.chat-table td {
+  border: 1px solid var(--border-color);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.chat-table th {
+  background: var(--md-sys-color-surface-variant);
+  font-weight: 700;
+}
+
+.chat-math-block {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 4px 0;
+}

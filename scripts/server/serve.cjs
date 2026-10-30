@@ -55,6 +55,7 @@ const BACKEND_PATHS = {
 };
 let BACKEND_PATH = "";
 const backendSupportsFlags = {};
+const backendValidationErrors = {};
 if (osPlatform === "win32") {
   let hasNvidia = false;
   try {
@@ -1605,6 +1606,65 @@ function formatBytes(bytes) {
   return `${(value / (1024 ** idx)).toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
 }
 
+const RETRYABLE_FILE_CODES = new Set(["EACCES", "EBUSY", "EMFILE", "ENFILE", "EPERM"]);
+
+function sleepSync(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function withFileRetrySync(operation, attempts = 8) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return operation();
+    } catch (err) {
+      lastError = err;
+      if (!RETRYABLE_FILE_CODES.has(err?.code) || attempt === attempts - 1) throw err;
+      sleepSync(Math.min(1000, 100 * (2 ** attempt)));
+    }
+  }
+  throw lastError;
+}
+
+function describeStorageError(err, targetPath) {
+  const target = path.basename(targetPath || "the destination file");
+  if (err?.code === "ENOSPC" || err?.code === "EFBIG") {
+    const detail = err?.message ? ` ${err.message}` : "";
+    return `Cannot write ${target}: the destination has insufficient usable space or its filesystem cannot store a file this large.${detail} Large models require an NTFS, exFAT, APFS, or ext4 drive; FAT32 files are limited to 4 GB.`;
+  }
+  if (RETRYABLE_FILE_CODES.has(err?.code)) {
+    return `Cannot access ${target} after several retries. Close programs scanning or using the file, allow this app through antivirus/ransomware protection, and retry.`;
+  }
+  return err?.message || String(err);
+}
+
+function ensureStorageCapacity(targetDir, requiredBytes) {
+  const bytes = Number(requiredBytes) || 0;
+  if (bytes <= 0 || typeof fs.statfsSync !== "function") return;
+  try {
+    const stats = fs.statfsSync(targetDir);
+    const availableBytes = Number(stats.bavail) * Number(stats.bsize);
+    if (Number.isFinite(availableBytes) && availableBytes > 0 && bytes > availableBytes) {
+      const err = new Error(`Only ${formatBytes(availableBytes)} is available, but ${formatBytes(bytes)} is required.`);
+      err.code = "ENOSPC";
+      throw err;
+    }
+  } catch (err) {
+    if (err?.code === "ENOSPC") throw err;
+  }
+}
+
+function replaceFileWithRetry(tempPath, destPath) {
+  withFileRetrySync(() => {
+    try {
+      fs.unlinkSync(destPath);
+    } catch (err) {
+      if (err?.code !== "ENOENT") throw err;
+    }
+    fs.renameSync(tempPath, destPath);
+  });
+}
+
 function getPathInfo(label, targetPath, type = "file") {
   const exists = fs.existsSync(targetPath);
   return {
@@ -1836,6 +1896,20 @@ function resolveSystemLlamaServer() {
   return "";
 }
 
+function describeLlmProbeFailure(result, output) {
+  const text = String(output || "").trim().slice(-600);
+  if (text) return text;
+  if (result.error) return result.error.message || String(result.error);
+  const code = result.status;
+  if (code === null || code === undefined) return "Backend did not start (timed out or was killed).";
+  // 0xC0000135 = STATUS_DLL_NOT_FOUND: modular llama.cpp builds need every bundled DLL next to llama-server.exe.
+  if (osPlatform === "win32" && (code >>> 0) === 0xC0000135) {
+    return "A required DLL is missing next to llama-server.exe (exit 0xC0000135). Re-run setup to reinstall the llama.cpp backend, and install the Visual C++ Redistributable and, for CUDA, a current NVIDIA driver.";
+  }
+  if (code !== 0) return `Backend exited with code ${osPlatform === "win32" ? "0x" + (code >>> 0).toString(16).toUpperCase() : code} without listing any devices.`;
+  return "Backend reported no usable devices.";
+}
+
 function probeLlmBackend(backend) {
   if (!backend?.path || !fs.existsSync(backend.path)) {
     return {
@@ -1863,7 +1937,7 @@ function probeLlmBackend(backend) {
       detected,
       devices,
       device: devices[0] || null,
-      error: result.status && !detected ? output.trim().slice(-600) : "",
+      error: !detected ? describeLlmProbeFailure(result, output) : "",
     };
   } catch (err) {
     return {
@@ -1945,9 +2019,15 @@ function getLlmBackendCandidates() {
   return probe.available;
 }
 
+// macOS writes "._name" AppleDouble files next to real files on exFAT and FAT drives.
+// They are never models or user data, so listings of the app's data folders skip them.
+function readdirVisible(dir) {
+  return fs.readdirSync(dir).filter((name) => !name.startsWith("._"));
+}
+
 function getLlmModels() {
   try {
-    return fs.readdirSync(LLM_MODELS)
+    return readdirVisible(LLM_MODELS)
       .filter((filename) => filename.toLowerCase().endsWith(".gguf"))
       .map((filename) => {
         const stats = fs.statSync(path.join(LLM_MODELS, filename));
@@ -2069,7 +2149,7 @@ function getSpeechModels() {
   const known = new Set(catalog.map((model) => model.filename.toLowerCase()));
   let custom = [];
   try {
-    custom = fs.readdirSync(SPEECH_MODELS)
+    custom = readdirVisible(SPEECH_MODELS)
       .filter((filename) => filename.toLowerCase().endsWith(".bin") && !known.has(filename.toLowerCase()))
       .map((filename) => {
         const sizeBytes = getPathSize(path.join(SPEECH_MODELS, filename));
@@ -2151,7 +2231,7 @@ function getTtsModels() {
   const known = new Set(catalog.map((model) => model.filename.toLowerCase()));
   let custom = [];
   try {
-    custom = fs.readdirSync(TTS_MODELS)
+    custom = readdirVisible(TTS_MODELS)
       .filter((filename) => filename.toLowerCase().endsWith(".json") && !known.has(filename.toLowerCase()))
       .map((filename) => {
         const manifest = readTtsManifest(filename) || {};
@@ -2230,6 +2310,75 @@ async function stopTts() {
   ttsGenerationState = { active: false, phase: "", progress: 0, model: "", voice: "", output: "" };
 }
 
+function convertFloatWavToPcm16(buffer) {
+  if (!isWaveBuffer(buffer)) return buffer;
+
+  let offset = 12;
+  let fmt = null;
+  let data = null;
+
+  while (offset + 8 <= buffer.length) {
+    const id = buffer.toString("ascii", offset, offset + 4);
+    const size = buffer.readUInt32LE(offset + 4);
+    const start = offset + 8;
+    const end = start + size;
+    if (end > buffer.length) break;
+
+    if (id === "fmt ") {
+      fmt = {
+        audioFormat: buffer.readUInt16LE(start),
+        channels: buffer.readUInt16LE(start + 2),
+        sampleRate: buffer.readUInt32LE(start + 4),
+        bitsPerSample: buffer.readUInt16LE(start + 14),
+      };
+    } else if (id === "data") {
+      data = { start, size };
+    }
+
+    offset = end + (size % 2);
+  }
+
+  if (!fmt || !data || fmt.audioFormat !== 3 || fmt.bitsPerSample !== 32 || fmt.channels < 1) {
+    return buffer;
+  }
+
+  const samples = Math.floor(data.size / 4);
+  const pcmDataSize = samples * 2;
+  const output = Buffer.alloc(44 + pcmDataSize);
+  output.write("RIFF", 0, "ascii");
+  output.writeUInt32LE(36 + pcmDataSize, 4);
+  output.write("WAVE", 8, "ascii");
+  output.write("fmt ", 12, "ascii");
+  output.writeUInt32LE(16, 16);
+  output.writeUInt16LE(1, 20);
+  output.writeUInt16LE(fmt.channels, 22);
+  output.writeUInt32LE(fmt.sampleRate, 24);
+  output.writeUInt32LE(fmt.sampleRate * fmt.channels * 2, 28);
+  output.writeUInt16LE(fmt.channels * 2, 32);
+  output.writeUInt16LE(16, 34);
+  output.write("data", 36, "ascii");
+  output.writeUInt32LE(pcmDataSize, 40);
+
+  for (let i = 0; i < samples; i += 1) {
+    const floatValue = buffer.readFloatLE(data.start + i * 4);
+    const clamped = Math.max(-1, Math.min(1, Number.isFinite(floatValue) ? floatValue : 0));
+    const intValue = clamped < 0 ? Math.round(clamped * 32768) : Math.round(clamped * 32767);
+    output.writeInt16LE(intValue, 44 + i * 2);
+  }
+
+  return output;
+}
+
+function ensureBrowserCompatibleTtsWav(filePath) {
+  try {
+    const original = fs.readFileSync(filePath);
+    const converted = convertFloatWavToPcm16(original);
+    if (converted !== original) {
+      fs.writeFileSync(filePath, converted);
+    }
+  } catch (_) {}
+}
+
 function saveTtsOutput(result) {
   const createdAt = new Date().toISOString();
   const stamp = createdAt.replace(/[:.]/g, "-");
@@ -2237,7 +2386,8 @@ function saveTtsOutput(result) {
   const wavFilename = `${base}.wav`;
   const jsonFilename = `${base}.json`;
   const wavPath = path.join(TTS_OUTPUTS, wavFilename);
-  fs.copyFileSync(result.wavPath, wavPath);
+  const wavBuffer = convertFloatWavToPcm16(fs.readFileSync(result.wavPath));
+  fs.writeFileSync(wavPath, wavBuffer);
   const metadata = {
     text: result.text || "",
     model: result.model,
@@ -2262,13 +2412,19 @@ function saveTtsOutput(result) {
 
 function listTtsOutputs() {
   try {
-    return fs.readdirSync(TTS_OUTPUTS)
+    return readdirVisible(TTS_OUTPUTS)
       .filter((file) => file.toLowerCase().endsWith(".json"))
       .map((file) => {
         const filePath = path.join(TTS_OUTPUTS, file);
         try {
           const metadata = JSON.parse(fs.readFileSync(filePath, "utf8"));
           const stat = fs.statSync(filePath);
+          if (metadata.audioFile) {
+            const audioPath = path.join(TTS_OUTPUTS, path.basename(String(metadata.audioFile)));
+            if (pathInside(audioPath, TTS_OUTPUTS) && fs.existsSync(audioPath)) {
+              ensureBrowserCompatibleTtsWav(audioPath);
+            }
+          }
           return {
             ...metadata,
             filename: file,
@@ -2425,7 +2581,9 @@ async function stopSpeech() {
   speechTranscriptionState = { active: false, phase: "", progress: 0, model: "", filename: "" };
 }
 
-function readBinaryBody(req, limitBytes = 250 * 1024 * 1024) {
+// Uploads arrive as 16 kHz mono WAV (the browser converts other formats), about 115 MB
+// per hour, so 1 GB allows roughly 9 hours of audio.
+function readBinaryBody(req, limitBytes = 1024 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let bytes = 0;
@@ -2468,7 +2626,7 @@ function saveTranscript(result) {
 
 function listTranscriptions() {
   try {
-    return fs.readdirSync(TRANSCRIPTIONS)
+    return readdirVisible(TRANSCRIPTIONS)
       .filter((file) => file.toLowerCase().endsWith(".json"))
       .map((file) => {
         const filePath = path.join(TRANSCRIPTIONS, file);
@@ -2818,28 +2976,28 @@ async function getHealth() {
       options: getBackendOptions(),
     },
     models: {
-      count: fs.existsSync(MODELS) ? fs.readdirSync(MODELS).filter(isModelFile).length : 0,
+      count: fs.existsSync(MODELS) ? readdirVisible(MODELS).filter(isModelFile).length : 0,
       totalBytes: getPathSize(MODELS),
       totalSize: formatBytes(getPathSize(MODELS)),
     },
     outputs: {
-      count: fs.existsSync(OUTPUTS) ? fs.readdirSync(OUTPUTS).filter((file) => file.toLowerCase().endsWith(".json")).length : 0,
+      count: fs.existsSync(OUTPUTS) ? readdirVisible(OUTPUTS).filter((file) => file.toLowerCase().endsWith(".json")).length : 0,
       totalBytes: getPathSize(OUTPUTS),
       totalSize: formatBytes(getPathSize(OUTPUTS)),
     },
     chat: {
-      count: fs.existsSync(CHAT_HISTORY) ? fs.readdirSync(CHAT_HISTORY).filter((file) => file.toLowerCase().endsWith(".json")).length : 0,
+      count: fs.existsSync(CHAT_HISTORY) ? readdirVisible(CHAT_HISTORY).filter((file) => file.toLowerCase().endsWith(".json")).length : 0,
       totalBytes: getPathSize(CHAT_HISTORY),
       totalSize: formatBytes(getPathSize(CHAT_HISTORY)),
     },
     speech: {
-      transcriptions: fs.existsSync(TRANSCRIPTIONS) ? fs.readdirSync(TRANSCRIPTIONS).filter((file) => file.toLowerCase().endsWith(".json")).length : 0,
+      transcriptions: fs.existsSync(TRANSCRIPTIONS) ? readdirVisible(TRANSCRIPTIONS).filter((file) => file.toLowerCase().endsWith(".json")).length : 0,
       totalBytes: getPathSize(TRANSCRIPTIONS),
       totalSize: formatBytes(getPathSize(TRANSCRIPTIONS)),
     },
     tts: {
-      models: fs.existsSync(TTS_MODELS) ? fs.readdirSync(TTS_MODELS).filter((file) => file.toLowerCase().endsWith(".json")).length : 0,
-      outputs: fs.existsSync(TTS_OUTPUTS) ? fs.readdirSync(TTS_OUTPUTS).filter((file) => file.toLowerCase().endsWith(".json")).length : 0,
+      models: fs.existsSync(TTS_MODELS) ? readdirVisible(TTS_MODELS).filter((file) => file.toLowerCase().endsWith(".json")).length : 0,
+      outputs: fs.existsSync(TTS_OUTPUTS) ? readdirVisible(TTS_OUTPUTS).filter((file) => file.toLowerCase().endsWith(".json")).length : 0,
       runtimeInstalled: getTtsRuntimeStatus().installed,
       totalBytes: getPathSize(TTS_MODELS) + getPathSize(TTS_OUTPUTS) + getPathSize(TTS_CACHE),
       totalSize: formatBytes(getPathSize(TTS_MODELS) + getPathSize(TTS_OUTPUTS) + getPathSize(TTS_CACHE)),
@@ -2888,7 +3046,7 @@ function getCleanupCandidates() {
   }
 
   if (fs.existsSync(MODELS)) {
-    for (const item of fs.readdirSync(MODELS)) {
+    for (const item of readdirVisible(MODELS)) {
       if (item.toLowerCase().endsWith(".part") || item.toLowerCase().endsWith(".tmp")) {
         addCleanupCandidate(candidates, `partial-model-${item}`, path.join(MODELS, item), "Incomplete model download/import file.", { allowUserData: true });
       }
@@ -2949,6 +3107,10 @@ function isRunningInWSL() {
 function getVulkanUnavailableReason() {
   if (osPlatform === "win32" && !hasVulkanRuntime()) {
     return "The Vulkan runtime (vulkan-1.dll) is missing. Install or update your GPU vendor driver with Vulkan support, then run setup again so the Vulkan backend folder is repaired.";
+  }
+  const vulkanPath = osPlatform === "win32" ? BACKEND_PATHS.vulkan : BACKEND_PATHS.linuxVulkan;
+  if (backendValidationErrors[vulkanPath]) {
+    return backendValidationErrors[vulkanPath];
   }
   if (osPlatform === "linux" && isRunningInWSL()) {
     const gpuName = getGpuInfo().name;
@@ -3016,7 +3178,7 @@ function getCoreMLPythonPath() {
   try {
     const probeResult = spawnSync("python3", [
       "-c",
-      "import python_coreml_stable_diffusion, diffusers, transformers"
+      "import torch, python_coreml_stable_diffusion, diffusers, transformers"
     ], { timeout: 2000 });
     
     if (probeResult.status === 0) {
@@ -3099,7 +3261,8 @@ function getBackendOptions() {
     unavailable.push({ id: "vulkan", label: "Vulkan GPU", reason: getVulkanUnavailableReason() });
   }
   if (cudaInstalled && !cudaAvailable) {
-    unavailable.push({ id: "cuda", label: "CUDA GPU", reason: "Installed, but CUDA backend validation failed." });
+    const cudaPath = osPlatform === "win32" ? BACKEND_PATHS.cuda : BACKEND_PATHS.linuxCuda;
+    unavailable.push({ id: "cuda", label: "CUDA GPU", reason: backendValidationErrors[cudaPath] || "Installed, but CUDA backend validation failed." });
   }
   if (rocmInstalled && !rocmAvailable) {
     unavailable.push({ id: "rocm", label: "ROCm GPU (AMD)", reason: "Installed, but ROCm backend validation failed." });
@@ -3163,7 +3326,14 @@ function getBackendOptions() {
 function backendAccepts(binaryPath, backendName) {
   if (!binaryPath || !fs.existsSync(binaryPath)) return false;
   try {
-    const cliBackendName = backendName;
+    delete backendValidationErrors[binaryPath];
+    const cliBackendName = backendName === "cuda"
+      ? "cuda0"
+      : backendName === "vulkan"
+        ? getPreferredVulkanBackendName()
+        : backendName === "rocm"
+          ? "rocm0"
+          : backendName;
     let probeArgs = [
       "--backend", cliBackendName,
       "--params-backend", cliBackendName,
@@ -3188,6 +3358,15 @@ function backendAccepts(binaryPath, backendName) {
     }
     let result = spawnSync(binaryPath, probeArgs, { env: spawnEnv, encoding: "utf8", timeout: 5000 });
     let output = `${result.stdout || ""}\n${result.stderr || ""}`;
+    const unsignedExitCode = Number(result.status) >>> 0;
+    if (osPlatform === "win32" && unsignedExitCode === 0xC0000135) {
+      backendValidationErrors[binaryPath] = "Windows could not start this backend because a required DLL is missing (0xC0000135). Run scripts/setup/setup.ps1 to install the Microsoft Visual C++ runtime and repair the backend.";
+      return false;
+    }
+    if (osPlatform === "win32" && unsignedExitCode === 0xC000001D) {
+      backendValidationErrors[binaryPath] = "This Windows backend used a CPU instruction that this processor does not support (0xC000001D). Run scripts/setup/setup.ps1 to replace it with the runtime-dispatched backend build.";
+      return false;
+    }
 
     let supportsFlags = true;
     // Some binaries do not support --backend. If we see "unknown argument",
@@ -3203,19 +3382,32 @@ function backendAccepts(binaryPath, backendName) {
     }
 
     const lower = output.toLowerCase();
-    if (lower.includes("backend config failed") || output.includes(`backend '${backendName}' was not found`) || output.includes(`backend '${cliBackendName}' was not found`)) {
+    // Keep the real reason so the UI can show it instead of a generic "did not register".
+    const reject = (reason) => {
+      const detail = output.trim().split(/\r?\n/).filter(Boolean).slice(-3).join(" | ").slice(0, 400);
+      backendValidationErrors[binaryPath] = detail ? `${reason} Backend output: ${detail}` : reason;
       return false;
+    };
+    if (lower.includes("backend config failed") || output.includes(`backend '${backendName}' was not found`) || output.includes(`backend '${cliBackendName}' was not found`)) {
+      return reject(backendName === "vulkan" && osPlatform === "linux"
+        ? "The backend started but found no Vulkan GPU. Check that `vulkaninfo --summary` lists your GPU (not only llvmpipe). Older Radeon HD 7000/8000 (GCN 1.0/1.1) cards need the amdgpu kernel driver for Mesa Vulkan: boot with radeon.si_support=0 amdgpu.si_support=1 (or radeon.cik_support=0 amdgpu.cik_support=1)."
+        : `The backend started but could not use the ${backendName} device.`);
     }
     // Reject binaries that fail at the dynamic linker / glibc level.
     if (lower.includes("glibc") || lower.includes("libc.so") || lower.includes("libstdc++") || lower.includes("cannot open shared object")) {
-      return false;
+      return reject(osPlatform === "linux"
+        ? "This prebuilt backend cannot run on this Linux system (it needs glibc 2.38+ / a newer libstdc++, e.g. Ubuntu 24.04, or a missing shared library). Build it locally with scripts/build/build_from_source.sh."
+        : "This backend is missing a required system library.");
     }
     // A healthy binary prints project-specific log lines when it tries to load the model.
     const isOk = lower.includes("stable-diffusion.cpp") || lower.includes("loading model");
     if (isOk) {
       backendSupportsFlags[binaryPath] = supportsFlags;
+      return true;
     }
-    return isOk;
+    return reject(result.error
+      ? `The backend could not be started: ${result.error.message}.`
+      : `The backend exited (code ${result.status}) without starting.`);
   } catch (_) {
     return false;
   }
@@ -3368,7 +3560,9 @@ function proxyImageBackendRequest(req, res) {
     path: req.url,
     method: req.method,
     headers,
-    timeout: 300000,
+    // CPU generation and VAE decoding can legitimately take well over five
+    // minutes on low-memory systems. Let the browser/user control cancellation.
+    timeout: 0,
   }, (proxyRes) => {
     res.writeHead(proxyRes.statusCode || 502, {
       ...proxyRes.headers,
@@ -3881,7 +4075,7 @@ function startCoreMLLoadHeartbeat(proc) {
 
 function getDefaultModel() {
   try {
-    const files = fs.readdirSync(MODELS).filter(isModelFile);
+    const files = readdirVisible(MODELS).filter(isModelFile);
     return files.length ? path.join(MODELS, files[0]) : null;
   } catch (_) { return null; }
 }
@@ -3923,7 +4117,7 @@ function chooseAutoContext(modelFilename, isGpu) {
   let projectorSizeGb = 0;
   if (isVisionModel) {
     try {
-      const files = fs.readdirSync(LLM_MODELS);
+      const files = readdirVisible(LLM_MODELS);
       const projector = files.find((file) => {
         const lower = file.toLowerCase();
         return lower.endsWith(".gguf") && lower.includes("mmproj");
@@ -3991,6 +4185,8 @@ function isVisionModelFilename(filename = "") {
     lower.includes("vision") ||
     lower.includes("qwen2vl") ||
     lower.includes("qwen2-vl") ||
+    lower.includes("qwen2.5-vl") ||
+    lower.includes("qwen3-vl") ||
     lower.includes("qwen3.5-4b-vision") ||
     lower.includes("gemma-4") ||
     lower.includes("gemma4") ||
@@ -4029,6 +4225,52 @@ function buildLlmLoadProfiles(settings = {}, backend = {}) {
   return profiles;
 }
 
+// Architectures that GGUF files can declare but llama.cpp has never implemented.
+// Updating the backend cannot fix these, so fail early with a clear message.
+const LLAMA_CPP_UNSUPPORTED_ARCHITECTURES = {
+  mllama: "Llama 3.2 Vision (mllama) is not supported by llama.cpp, so no backend update can load it. Use a llama.cpp-supported vision model instead (for example Qwen2.5-VL, Gemma 3, or Llava) together with its mmproj file.",
+};
+
+function readGgufArchitecture(modelPath) {
+  let fd = null;
+  try {
+    fd = fs.openSync(modelPath, "r");
+    const buf = Buffer.alloc(64 * 1024);
+    const bytes = fs.readSync(fd, buf, 0, buf.length, 0);
+    if (bytes < 24 || buf.toString("latin1", 0, 4) !== "GGUF") return "";
+    let kvCount = Number(buf.readBigUInt64LE(16));
+    let offset = 24;
+    const readString = () => {
+      const len = Number(buf.readBigUInt64LE(offset));
+      offset += 8;
+      if (len > 4096 || offset + len > bytes) throw new Error("metadata exceeds header window");
+      const value = buf.toString("utf8", offset, offset + len);
+      offset += len;
+      return value;
+    };
+    // GGUF value type sizes for fixed-width scalar types; 8 = string.
+    const scalarSize = { 0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8 };
+    while (kvCount-- > 0) {
+      const key = readString();
+      const type = buf.readUInt32LE(offset);
+      offset += 4;
+      if (type === 8) {
+        const value = readString();
+        if (key === "general.architecture") return value;
+      } else if (scalarSize[type]) {
+        offset += scalarSize[type];
+      } else {
+        return ""; // arrays and unknown types: give up, let llama.cpp report it
+      }
+    }
+  } catch (_) {
+    // Unreadable header: let llama.cpp produce its own error.
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} }
+  }
+  return "";
+}
+
 async function startLlm(settings = {}) {
   const filename = path.basename(String(settings.model || ""));
   const modelPath = path.join(LLM_MODELS, filename);
@@ -4037,6 +4279,11 @@ async function startLlm(settings = {}) {
   }
   if (!filename.toLowerCase().endsWith(".gguf")) {
     throw new Error("Text generation requires a .gguf model.");
+  }
+
+  const architecture = readGgufArchitecture(modelPath).toLowerCase();
+  if (LLAMA_CPP_UNSUPPORTED_ARCHITECTURES[architecture]) {
+    throw new Error(`${filename}: ${LLAMA_CPP_UNSUPPORTED_ARCHITECTURES[architecture]}`);
   }
 
   const candidates = getLlmBackendCandidates();
@@ -4060,7 +4307,9 @@ async function startLlm(settings = {}) {
         await startLlmWithBackend({ ...settings, __loadProfile: profile }, backend);
         llmSettings.backendFallbacks = failures;
         updateLlmModelSettings(filename, {
-          preferredBackend: backend.key,
+          // Only pin the backend when the first choice worked; a CPU fallback after a
+          // failed GPU start must not become the permanent preference.
+          ...(failures.length === 0 ? { preferredBackend: backend.key } : {}),
           lastBackendMode: llmSettings.backendMode,
           lastBackendBinary: llmSettings.backendBinary,
           lastSettings: {
@@ -4092,6 +4341,26 @@ async function startLlm(settings = {}) {
   const last = failures[failures.length - 1];
   llmSettings.backendFallbacks = failures;
   throw new Error(`Text model failed on all available llama.cpp backends. Last failure: ${last?.error || "unknown error"}`);
+}
+
+// Older llama.cpp builds take --mmap/--mlock; newer ones only --load-mode. Read the
+// binary's --help once per path to know which it understands.
+const llamaServerHelpCache = new Map();
+function llamaServerSupportsFlag(binaryPath, flag) {
+  if (!llamaServerHelpCache.has(binaryPath)) {
+    let help = "";
+    try {
+      const result = spawnSync(binaryPath, ["--help"], {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 10000,
+        maxBuffer: 4 * 1024 * 1024,
+      });
+      help = `${result.stdout || ""}\n${result.stderr || ""}`;
+    } catch (_) {}
+    llamaServerHelpCache.set(binaryPath, help);
+  }
+  return llamaServerHelpCache.get(binaryPath).includes(flag);
 }
 
 async function startLlmWithBackend(settings = {}, backend) {
@@ -4173,7 +4442,7 @@ async function startLlmWithBackend(settings = {}, backend) {
     }
     if (!mmprojPath) {
       try {
-        const files = fs.readdirSync(LLM_MODELS);
+        const files = readdirVisible(LLM_MODELS);
         let bestMatch = null;
         
         // 1. Match by Hugging Face repository prefix (e.g., "unsloth--gemma-4-E2B-it-qat-GGUF--")
@@ -4186,9 +4455,21 @@ async function startLlmWithBackend(settings = {}, backend) {
           });
         }
         
-        // 2. Match by model family keyword (e.g. matching model containing "gemma-4" with projector containing "gemma-4")
+        // 2. Match a projector named after this exact model, e.g.
+        //    Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf -> mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf
         if (!bestMatch) {
-          const keywords = ["gemma-4", "gemma4", "llava", "qwen2vl", "qwen2-vl", "paligemma", "minicpm", "internvl", "phi-3", "phi3", "smolvlm", "moondream"];
+          const baseName = lowerFilename.replace(/\.gguf$/, "").replace(/[-_.](?:i?q\d[\w]*|f16|bf16|f32)$/i, "");
+          if (baseName.length >= 6) {
+            bestMatch = files.find((file) => {
+              const lower = file.toLowerCase();
+              return lower.endsWith(".gguf") && lower.includes("mmproj") && lower.includes(baseName);
+            });
+          }
+        }
+
+        // 3. Match by model family keyword (e.g. matching model containing "gemma-4" with projector containing "gemma-4")
+        if (!bestMatch) {
+          const keywords = ["gemma-4", "gemma4", "llava", "qwen2.5-vl", "qwen3-vl", "qwen2vl", "qwen2-vl", "paligemma", "minicpm", "internvl", "phi-3", "phi3", "smolvlm", "moondream"];
           const matchedKeyword = keywords.find(kw => lowerFilename.includes(kw));
           if (matchedKeyword) {
             bestMatch = files.find(file => {
@@ -4198,12 +4479,11 @@ async function startLlmWithBackend(settings = {}, backend) {
           }
         }
         
-        // 3. General fallback
+        // 4. General fallback: only a generically named projector (e.g. mmproj-model-f16.gguf).
+        //    A projector named after another model (mmproj-Qwen2.5-VL-...) would make
+        //    llama.cpp fail to load this one.
         if (!bestMatch) {
-          bestMatch = files.find(file => {
-            const lower = file.toLowerCase();
-            return lower.endsWith(".gguf") && (lower === "mmproj-model-f16.gguf" || lower.includes("mmproj"));
-          });
+          bestMatch = files.find(file => /^mmproj(?:[-_.]model)?(?:[-_.](?:f16|bf16|f32|q\d\w*))?\.gguf$/i.test(file));
         }
         
         if (bestMatch) {
@@ -4243,13 +4523,19 @@ async function startLlmWithBackend(settings = {}, backend) {
                     backend.mode.includes("HIP") || backend.mode.includes("ROCm") ||
                     backend.mode.includes("Vulkan") || backend.mode.includes("Metal") ||
                     backend.mode.includes("SYCL");
-  if (!isGpuMode && llmSettings.mlock) {
-    args.push("--mlock");                    // ✅ Prevent OS swapping on CPU
-  }
-  
-  // All modes: memory-mapped loading for faster startup
-  if (llmSettings.mmap) {
-    args.push("--mmap");                     // ✅ Faster model loading
+  const lockMemory = !isGpuMode && llmSettings.mlock;
+  if (llamaServerSupportsFlag(backend.path, "--load-mode")) {
+    // llama.cpp b11000+ replaced --mmap/--mlock with --load-mode and rejects the old flags.
+    const loadMode = llmSettings.mmap ? (lockMemory ? "mmap+mlock" : "mmap") : (lockMemory ? "mlock" : "none");
+    args.push("--load-mode", loadMode);
+  } else {
+    if (lockMemory) {
+      args.push("--mlock");                    // ✅ Prevent OS swapping on CPU
+    }
+    // All modes: memory-mapped loading for faster startup
+    if (llmSettings.mmap) {
+      args.push("--mmap");                     // ✅ Faster model loading
+    }
   }
   
   if (llmSettings.enableThinking === false) {
@@ -4315,6 +4601,10 @@ async function startLlmWithBackend(settings = {}, backend) {
     else if (/\-\s+CPU\s+:/i.test(output) && llmSettings.backendMode.startsWith("Auto")) llmSettings.backendMode = "CPU";
     if (/error|failed/i.test(output) && !/no error/i.test(output)) {
       llmError = output.trim().slice(-1200);
+      const unknownArch = output.match(/unknown model architecture:\s*'([^']+)'/i);
+      if (unknownArch) {
+        llmError = `${LLAMA_CPP_UNSUPPORTED_ARCHITECTURES[unknownArch[1].toLowerCase()] || `This llama.cpp build does not support the '${unknownArch[1]}' architecture. Re-run setup to update the backend, or pick a different model.`}\n${llmError}`.slice(-1400);
+      }
     }
   });
   proc.on("exit", (code) => {
@@ -4724,7 +5014,7 @@ const IMAGE_BACKEND_DOWNLOADS = {
   "cpu": {
     id: "cpu",
     label: "CPU",
-    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-721-8caa3f9/sd-master-8caa3f9-bin-win-avx2-x64.zip",
+    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-win-cpu-x64.zip",
     destDir: path.join(ROOT, "app", "backend", "win", "cpu"),
     exeName: "sd-cpu.exe",
     requiredDll: "stable-diffusion.dll",
@@ -4732,7 +5022,7 @@ const IMAGE_BACKEND_DOWNLOADS = {
   "vulkan": {
     id: "vulkan",
     label: "Vulkan GPU",
-    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-669-2d40a8b/sd-master-2d40a8b-bin-win-vulkan-x64.zip",
+    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-685-19bdfe2/sd-master-19bdfe2-bin-win-vulkan-x64.zip",
     destDir: path.join(ROOT, "app", "backend", "win", "vulkan"),
     exeName: "sd-vulkan.exe",
     requiredDll: "stable-diffusion.dll",
@@ -4740,7 +5030,9 @@ const IMAGE_BACKEND_DOWNLOADS = {
   "cuda": {
     id: "cuda",
     label: "CUDA GPU",
-    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-721-8caa3f9/sd-master-8caa3f9-bin-win-cuda12-x64.zip",
+    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-win-cuda12-x64.zip",
+    // The CUDA build does not bundle cudart64_12.dll / cublas; without it sd-cuda.exe fails to start.
+    runtimeUrl: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/cudart-sd-bin-win-cu12-x64.zip",
     destDir: path.join(ROOT, "app", "backend", "win", "cuda"),
     exeName: "sd-cuda.exe",
     requiredDll: "stable-diffusion.dll",
@@ -4761,7 +5053,7 @@ function listFilesRecursive(dir) {
   return out;
 }
 
-function installImageBackendArchive(zipPath, backend) {
+function installImageBackendArchive(zipPath, backend, runtimeOnly = false) {
   const tempDir = path.join(TOOLS, `image-backend-${backend.id}-extract-${Date.now()}`);
   try {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -4774,6 +5066,13 @@ function installImageBackendArchive(zipPath, backend) {
     }
 
     const files = listFilesRecursive(tempDir);
+    if (runtimeOnly) {
+      const dlls = files.filter((file) => path.extname(file).toLowerCase() === ".dll");
+      if (dlls.length === 0) throw new Error("CUDA runtime archive did not contain any DLL files.");
+      for (const file of dlls) fs.copyFileSync(file, path.join(backend.destDir, path.basename(file)));
+      cachedBackendOptions = null;
+      return;
+    }
     const exeSource = files.find((file) => ["sd-server.exe", "sd.exe"].includes(path.basename(file).toLowerCase()));
     const dllSource = files.find((file) => path.basename(file).toLowerCase() === backend.requiredDll.toLowerCase());
     if (!exeSource || !dllSource) {
@@ -4798,12 +5097,15 @@ function installImageBackendArchive(zipPath, backend) {
   }
 }
 
-function startImageBackendDownload(backendId, redirectCount = 0, redirectUrl = "") {
-  if (downloadState.active && redirectCount === 0) {
+function startImageBackendDownload(backendId, redirectCount = 0, redirectUrl = "", stage = "main") {
+  const isRuntimeStage = stage === "runtime";
+  if (downloadState.active && redirectCount === 0 && !isRuntimeStage) {
     throw new Error("Another download is already active.");
   }
   if (osPlatform !== "win32") {
-    throw new Error("In-app backend downloads are currently available for Windows image backends.");
+    throw new Error(osPlatform === "linux"
+      ? "In-app backend downloads are only available on Windows. On Linux, run `bash scripts/setup/setup.sh` (it installs the Vulkan/CUDA/ROCm backends that match your GPU), or build them with scripts/build/build_from_source.sh if the prebuilt binaries do not run on your distribution."
+      : "In-app backend downloads are only available on Windows. Run the platform setup script again to install or repair backends.");
   }
   const backend = IMAGE_BACKEND_DOWNLOADS[String(backendId || "").toLowerCase()];
   if (!backend) {
@@ -4811,15 +5113,15 @@ function startImageBackendDownload(backendId, redirectCount = 0, redirectUrl = "
   }
 
   fs.mkdirSync(TOOLS, { recursive: true });
-  const url = redirectUrl || backend.url;
-  const filename = `${backend.id}-backend.zip`;
+  const url = redirectUrl || (isRuntimeStage ? backend.runtimeUrl : backend.url);
+  const filename = isRuntimeStage ? `${backend.id}-runtime.zip` : `${backend.id}-backend.zip`;
   const destPath = path.join(TOOLS, filename);
   const tempPath = `${destPath}.part`;
   if (redirectCount === 0) {
     try { fs.unlinkSync(tempPath); } catch (_) {}
     downloadState = {
       active: true,
-      filename: backend.label,
+      filename: isRuntimeStage ? `${backend.label} runtime` : backend.label,
       progress: 0,
       speed: "0 MB/s",
       eta: 0,
@@ -4866,7 +5168,7 @@ function startImageBackendDownload(backendId, redirectCount = 0, redirectUrl = "
       fileStream.close();
       try { fs.unlinkSync(tempPath); } catch (_) {}
       activeDownload = null;
-      startImageBackendDownload(backend.id, redirectCount + 1, nextUrl);
+      startImageBackendDownload(backend.id, redirectCount + 1, nextUrl, stage);
       return;
     }
     if (response.statusCode !== 200) {
@@ -4910,13 +5212,18 @@ function startImageBackendDownload(backendId, redirectCount = 0, redirectUrl = "
       }
       fileStream.end(() => {
         try {
-          try { fs.unlinkSync(destPath); } catch (_) {}
-          fs.renameSync(tempPath, destPath);
+          replaceFileWithRetry(tempPath, destPath);
           downloadState.speed = "Installing";
           downloadState.progress = 95;
-          installImageBackendArchive(destPath, backend);
+          installImageBackendArchive(destPath, backend, isRuntimeStage);
           try { fs.unlinkSync(destPath); } catch (_) {}
           downloadFinalized = true;
+          if (!isRuntimeStage && backend.runtimeUrl) {
+            activeDownload = null;
+            console.log(`  [backend-download] Installed ${backend.label} backend, fetching runtime libraries`);
+            startImageBackendDownload(backend.id, 0, "", "runtime");
+            return;
+          }
           downloadState.active = false;
           downloadState.progress = 100;
           downloadState.downloadedBytes = downloadedBytes;
@@ -4982,6 +5289,29 @@ function describeDownloadHttpError(statusCode, url, headers = {}) {
     return `HTTP 404: Model file not found. Check that the URL points directly to a .safetensors, .gguf, or .ckpt file.`;
   }
   return `HTTP ${statusCode}`;
+}
+
+const MODEL_FILE_URL_HINT = "Use a direct link to a single model file ending in .safetensors, .gguf or .ckpt. On Hugging Face, open the repository's Files tab and copy the download link of one file.";
+
+// Rejects URLs that point at a web page instead of a downloadable file, e.g. a
+// Hugging Face repository page, which otherwise "downloads" as a small HTML file.
+function getModelDownloadUrlIssue(url) {
+  let parsed;
+  try {
+    parsed = new URL(String(url || "").trim());
+  } catch (_) {
+    return "That is not a valid URL.";
+  }
+  if (!/^https?:$/.test(parsed.protocol)) return "Only http(s) download URLs are supported.";
+  if (/(^|\.)huggingface\.co$/i.test(parsed.hostname)) {
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const isFileUrl = parts.includes("resolve") || parts.includes("blob");
+    if (!isFileUrl) return `That URL is a Hugging Face repository page, not a model file. ${MODEL_FILE_URL_HINT}`;
+  }
+  if (!path.extname(path.basename(parsed.pathname))) {
+    return `That URL does not point to a model file (no file extension). ${MODEL_FILE_URL_HINT}`;
+  }
+  return "";
 }
 
 function startModelDownload(url, overrideFilename = null, targetDir = MODELS, kind = "image", redirectCount = 0) {
@@ -5088,6 +5418,13 @@ function startModelDownload(url, overrideFilename = null, targetDir = MODELS, ki
       return;
     }
 
+    // Repository pages, login walls and error pages come back as 200 + text/html.
+    if (String(response.headers["content-type"] || "").toLowerCase().includes("text/html")) {
+      response.resume();
+      failDownload(`That URL returned a web page, not a model file. ${MODEL_FILE_URL_HINT}`);
+      return;
+    }
+
     const totalBytes = parseInt(response.headers["content-length"], 10) || 0;
     downloadState.totalBytes = totalBytes;
     let downloadedBytes = 0;
@@ -5145,8 +5482,7 @@ function startModelDownload(url, overrideFilename = null, targetDir = MODELS, ki
               return;
             }
           }
-          try { fs.unlinkSync(destPath); } catch (_) {}
-          fs.renameSync(tempPath, destPath);
+          replaceFileWithRetry(tempPath, destPath);
 
           if (destPath.toLowerCase().endsWith(".zip")) {
             try {
@@ -5220,7 +5556,7 @@ function cancelModelDownload() {
 
 // ── MIME types ────────────────────────────────────────────────────────────────
 const MIME = {
-  ".html": "text/html", ".js": "application/javascript",
+  ".html": "text/html", ".js": "application/javascript", ".mjs": "application/javascript",
   ".css":  "text/css",  ".png": "image/png",
   ".jpg":  "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".svg": "image/svg+xml",
   ".ico":  "image/x-icon", ".json": "application/json", ".wav": "audio/wav", ".txt": "text/plain",
@@ -5352,23 +5688,27 @@ function describeLinuxRuntimeLinkerError(rawError) {
 
 function describeBackendExitCode(code, backendPath) {
   const numericCode = Number(code);
+  if (osPlatform === "win32" && numericCode === 3221225501) {
+    const backendName = path.basename(backendPath || BACKEND_PATH || "backend");
+    return `exited with code ${code} (0xC000001D: illegal CPU instruction).\n\nThe model is not the cause. Windows stopped ${backendName} because the backend used a CPU instruction that this processor does not support. Run scripts/setup/setup.ps1 to replace the old machine-specific build with the runtime-dispatched Windows backend and matching CUDA 12.8 runtime. RTX 50-series users should then retry CUDA mode; CPU mode remains available as a fallback.`;
+  }
   if (osPlatform === "win32" && numericCode === 3221225781) {
     const backendName = path.basename(backendPath || BACKEND_PATH || "backend");
     const lowerBackend = backendName.toLowerCase();
     const isVulkan = lowerBackend.includes("vulkan");
     const isCuda = lowerBackend.includes("cuda");
     const likelyMissing = isVulkan
-      ? "the Vulkan runtime/driver DLL, such as vulkan-1.dll"
+      ? "a Microsoft Visual C++ runtime DLL (such as VCOMP140.dll) or the Vulkan driver DLL (vulkan-1.dll)"
       : isCuda
         ? "a CUDA runtime DLL or NVIDIA driver component"
         : "a required backend DLL";
     const driverHint = isVulkan
-      ? "Install or update the GPU vendor driver with Vulkan support, then run setup again so the Vulkan backend folder is repaired."
+      ? "Run scripts/setup/setup.ps1 to install the Microsoft runtime and repair the Vulkan backend, then update the GPU driver if vulkan-1.dll is still unavailable."
       : isCuda
         ? "Install or update the NVIDIA driver, then run setup again so the CUDA backend folder is repaired."
         : "Update the GPU driver, then run setup again so the backend folder is repaired.";
 
-    return `exited with code ${code} (0xC0000135: required DLL not found).\n\nWindows could not start ${backendName} because ${likelyMissing} is missing or not loadable. ${driverHint}\n\nIf you are using an AMD/Intel GPU, update the AMD/Intel graphics driver first. If the GPU is too old for the current Vulkan backend, switch the backend to CPU.`;
+    return `exited with code ${code} (0xC0000135: required DLL not found).\n\nWindows could not start ${backendName} because ${likelyMissing} is missing or not loadable. ${driverHint}\n\nCPU mode remains available if Vulkan still cannot start.`;
   }
 
   return `exited with code ${code}`;
@@ -5490,7 +5830,7 @@ function saveChatConversation(conversation = {}) {
 
 function listChatConversations() {
   try {
-    return fs.readdirSync(CHAT_HISTORY)
+    return readdirVisible(CHAT_HISTORY)
       .filter((file) => file.toLowerCase().endsWith(".json"))
       .map((file) => {
         try {
@@ -5580,7 +5920,7 @@ function saveGeneratedOutput(imageDataUrl, metadata = {}) {
 
 function listGeneratedOutputs() {
   try {
-    return fs.readdirSync(OUTPUTS)
+    return readdirVisible(OUTPUTS)
       .filter(file => file.toLowerCase().endsWith(".json"))
       .map(file => {
         try {
@@ -5651,7 +5991,21 @@ function streamModelUpload(req, filename, targetDir = MODELS, mode = "image") {
 
     const destPath = path.join(targetDir, safeFilename);
     const tempPath = `${destPath}.part`;
-    const out = fs.createWriteStream(tempPath);
+    try {
+      ensureStorageCapacity(targetDir, req.headers?.["content-length"]);
+    } catch (err) {
+      reject(new Error(describeStorageError(err, destPath)));
+      return;
+    }
+
+    let fileDescriptor;
+    try {
+      fileDescriptor = withFileRetrySync(() => fs.openSync(tempPath, "w"));
+    } catch (err) {
+      reject(new Error(describeStorageError(err, tempPath)));
+      return;
+    }
+    const out = fs.createWriteStream(tempPath, { fd: fileDescriptor, autoClose: true });
     let finished = false;
 
     const cleanupPartial = () => {
@@ -5676,12 +6030,12 @@ function streamModelUpload(req, filename, targetDir = MODELS, mode = "image") {
     });
     out.on("error", err => {
       cleanupPartial();
-      reject(err);
+      reject(new Error(describeStorageError(err, tempPath)));
     });
     out.on("finish", () => {
       try {
         finished = true;
-        fs.renameSync(tempPath, destPath);
+        replaceFileWithRetry(tempPath, destPath);
         console.log(`  [api] Imported model file: ${safeFilename}`);
         if (mode === "text" || mode === "speech") {
           const stats = fs.statSync(destPath);
@@ -5691,7 +6045,7 @@ function streamModelUpload(req, filename, targetDir = MODELS, mode = "image") {
         }
       } catch (err) {
         try { fs.unlinkSync(tempPath); } catch (_) {}
-        reject(err);
+        reject(new Error(describeStorageError(err, destPath)));
       }
     });
   });
@@ -6242,12 +6596,58 @@ function getLastUserQuery(messages) {
   return "";
 }
 
+// Asks the loaded model whether the latest message needs a web search and, if so, for a
+// standalone query that resolves references to earlier turns ("what about its price?").
+// Returns "" when the model decides no search is needed, or null if planning failed.
+async function planWebSearchQuery(messages) {
+  const recent = messages
+    .filter((message) => message?.role === "user" || message?.role === "assistant")
+    .slice(-6)
+    .map((message) => `${message.role === "user" ? "User" : "Assistant"}: ${getMessageText(message.content).replace(/<think>[\s\S]*?<\/think>/g, "").trim().slice(0, 600)}`)
+    .join("\n");
+  if (!recent) return null;
+  try {
+    const result = await requestJson(`http://127.0.0.1:${PORT_LLM}/v1/chat/completions`, {
+      model: llmSettings.model || "local-model",
+      messages: [
+        {
+          role: "system",
+          content: "You decide whether answering the user's latest message needs a web search. " +
+            "If it does, reply with ONLY a short standalone search query (max 12 words) that includes any names or topics the message refers to from earlier in the conversation. " +
+            "If it does not (greetings, chit-chat, rewriting or explaining text already in the chat, math, coding with no recent facts), reply with ONLY the word NONE.",
+        },
+        { role: "user", content: `Conversation:\n${recent}\n\nSearch query for the latest user message (or NONE):` },
+      ],
+      temperature: 0,
+      max_tokens: 48,
+      stream: false,
+      chat_template_kwargs: { enable_thinking: false },
+    }, 30000);
+    const raw = String(result?.choices?.[0]?.message?.content || "")
+      .replace(/<think>[\s\S]*?<\/think>/g, "")
+      .split("\n").map((line) => line.trim()).find(Boolean) || "";
+    const query = raw.replace(/^(search query|query)\s*:\s*/i, "").replace(/^["'`]+|["'`]+$/g, "").trim();
+    if (!query) return null;
+    if (/^none\.?$/i.test(query)) return "";
+    return query.slice(0, 200);
+  } catch (err) {
+    console.warn("  [web-search] Query planning failed, using the last message:", err.message || err);
+    return null;
+  }
+}
+
 async function augmentMessagesWithWebSearch(messages, body) {
   if (body.useWeb !== true && body.use_web !== true) {
     return { messages, webSources: [], webContext: "" };
   }
-  const query = String(body.webQuery || body.query || getLastUserQuery(messages) || "").trim();
+  let query = String(body.webQuery || body.query || "").trim();
+  if (!query) {
+    const planned = llmReady ? await planWebSearchQuery(messages) : null;
+    if (planned === "") return { messages, webSources: [], webContext: "", webSkipped: true };
+    query = String(planned || getLastUserQuery(messages) || "").trim();
+  }
   if (!query) return { messages, webSources: [], webContext: "" };
+  console.log(`  [web-search] Query: ${query}`);
 
   const result = await comprehensiveWebSearch(query, {
     timeFilter: body.timeFilter || body.time_filter || "any",
@@ -6640,7 +7040,7 @@ async function getLlmfitRecommendations(useCase = "chat", limit = 10) {
   // GET /api/models — list available model files
   if (req.url === "/api/models" && req.method === "GET") {
     try {
-      let files = fs.readdirSync(MODELS).filter(isModelFile).map(getModelInfo);
+      let files = readdirVisible(MODELS).filter(isModelFile).map(getModelInfo);
       if (downloadState.active && downloadState.filename) {
         files = files.filter(model => model.filename !== downloadState.filename);
       }
@@ -6687,6 +7087,12 @@ async function getLlmfitRecommendations(useCase = "chat", limit = 10) {
       const imageBackendReady = (backendReady && backendProc) || (openvinoReady && openvinoProc);
       if (imageBackendReady && backendSettingsMatch(currentSettings, requestedSettings)) {
         return json(res, 200, { ok: true, message: "Backend already running with requested settings.", settings: currentSettings, port: PORT_BACKEND });
+      }
+      if (generationState.active) {
+        return json(res, 409, {
+          ok: false,
+          error: "Image generation is in progress. Wait for it to finish or cancel it before changing backend settings.",
+        });
       }
       if (backendReady && backendProc && appleNpuRuntimeMatches(currentSettings, requestedSettings)) {
         currentSettings = requestedSettings;
@@ -6769,7 +7175,9 @@ async function getLlmfitRecommendations(useCase = "chat", limit = 10) {
     if (!body) return;
     const { url } = body;
     if (!url) return json(res, 400, { error: "URL is required" });
-    
+    const urlIssue = getModelDownloadUrlIssue(url);
+    if (urlIssue) return json(res, 400, { ok: false, error: urlIssue });
+
     startModelDownload(url);
     return json(res, 200, { ok: true, message: "Download started" });
   }
@@ -6894,11 +7302,59 @@ async function getLlmfitRecommendations(useCase = "chat", limit = 10) {
       return json(res, 404, { ok: false, error: "TTS output not found" });
     }
     const ext = path.extname(filePath).toLowerCase();
-    fs.readFile(filePath, (err, data) => {
-      if (err) return json(res, 500, { ok: false, error: err.message });
-      res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream", "Access-Control-Allow-Origin": "*" });
-      res.end(data);
+    if (ext === ".wav") ensureBrowserCompatibleTtsWav(filePath);
+    const stat = fs.statSync(filePath);
+    const contentType = MIME[ext] || "application/octet-stream";
+    const range = req.headers.range;
+
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+      if (!match) {
+        res.writeHead(416, {
+          "Content-Range": `bytes */${stat.size}`,
+          "Accept-Ranges": "bytes",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end();
+        return;
+      }
+
+      let start = match[1] ? Number(match[1]) : 0;
+      let end = match[2] ? Number(match[2]) : stat.size - 1;
+      if (!match[1] && match[2]) {
+        const suffixLength = Math.min(Number(match[2]) || 0, stat.size);
+        start = stat.size - suffixLength;
+        end = stat.size - 1;
+      }
+
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end >= stat.size || start > end) {
+        res.writeHead(416, {
+          "Content-Range": `bytes */${stat.size}`,
+          "Accept-Ranges": "bytes",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end();
+        return;
+      }
+
+      res.writeHead(206, {
+        "Content-Type": contentType,
+        "Content-Length": end - start + 1,
+        "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+        "Accept-Ranges": "bytes",
+        "Access-Control-Allow-Origin": "*",
+      });
+      fs.createReadStream(filePath, { start, end }).pipe(res);
+      return;
+    }
+
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Content-Length": stat.size,
+      "Accept-Ranges": "bytes",
+      "Access-Control-Allow-Origin": "*",
     });
+    fs.createReadStream(filePath).pipe(res);
     return;
   }
 
@@ -7024,7 +7480,8 @@ async function getLlmfitRecommendations(useCase = "chat", limit = 10) {
 
 server.timeout = 0; // Disable socket timeout for large model uploads/downloads
 
-server.listen(PORT_FRONTEND, "0.0.0.0", () => {
+// Local-only by default: the UI has no login. Set UAIS_HOST=0.0.0.0 to share it on your network.
+server.listen(PORT_FRONTEND, process.env.UAIS_HOST || "127.0.0.1", () => {
   console.log("");
   console.log("  ============================================================");
   console.log("   UNCENSORED AI STUDIO      |  Running");

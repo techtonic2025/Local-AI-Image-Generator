@@ -52,7 +52,7 @@ const MODEL_LIBRARY = [
         name: "Juggernaut XL v9 Lightning",
         filename: "Juggernaut_RunDiffusionPhoto2_Lightning_4Steps.safetensors",
         format: "Safetensors",
-        approxSize: "6.6 GB",
+        approxSize: "7.1 GB",
         resolution: "1024x1024",
         notes: "Photorealistic SDXL model tuned for 4-8 step Lightning generation.",
         url: "https://huggingface.co/RunDiffusion/Juggernaut-XL-Lightning/resolve/main/Juggernaut_RunDiffusionPhoto2_Lightning_4Steps.safetensors",
@@ -62,7 +62,7 @@ const MODEL_LIBRARY = [
         name: "DreamShaper XL Lightning",
         filename: "DreamShaperXL_Lightning.safetensors",
         format: "Safetensors",
-        approxSize: "6.6 GB",
+        approxSize: "6.9 GB",
         resolution: "1024x1024",
         notes: "All-around SDXL model for fantasy art, renders, illustration, and stylized images.",
         url: "https://huggingface.co/Lykon/dreamshaper-xl-lightning/resolve/main/DreamShaperXL_Lightning.safetensors",
@@ -97,7 +97,7 @@ const MODEL_LIBRARY = [
         name: "ReV Animated v1.2.2",
         filename: "rev-animated-v1-2-2.safetensors",
         format: "Safetensors",
-        approxSize: "2.1 GB",
+        approxSize: "5.5 GB",
         resolution: "512x512",
         notes: "Semi-realistic, 2.5D, anime, fantasy, and stylized digital art.",
         url: "https://huggingface.co/danbrown/RevAnimated-v1-2-2/resolve/main/rev-animated-v1-2-2.safetensors",
@@ -164,6 +164,32 @@ const TEXT_MODEL_LIBRARY = [
         url: "https://huggingface.co/mys/ggml_llava-v1.5-7b/resolve/main/ggml-model-q4_k.gguf",
         projectorUrl: "https://huggingface.co/mys/ggml_llava-v1.5-7b/resolve/main/mmproj-model-f16.gguf",
         projectorFilename: "mmproj-model-f16.gguf",
+        recommendedTiers: ["Mid", "High"],
+      },
+      {
+        name: "Qwen2.5-VL 3B Instruct (Vision)",
+        filename: "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
+        format: "GGUF",
+        size: "2.8 GB",
+        approxSize: "2.8 GB",
+        resolution: "N/A",
+        notes: "Small vision model: describes images, reads text and screenshots. Downloads its vision projector (mmproj) automatically.",
+        url: "https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
+        projectorUrl: "https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
+        projectorFilename: "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
+        recommendedTiers: ["Low", "Mid"],
+      },
+      {
+        name: "Qwen2.5-VL 7B Instruct (Vision)",
+        filename: "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+        format: "GGUF",
+        size: "5.5 GB",
+        approxSize: "5.5 GB",
+        resolution: "N/A",
+        notes: "Stronger vision model for documents, charts and detailed image questions. Downloads its vision projector (mmproj) automatically.",
+        url: "https://huggingface.co/ggml-org/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+        projectorUrl: "https://huggingface.co/ggml-org/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf",
+        projectorFilename: "mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf",
         recommendedTiers: ["Mid", "High"],
       },
     ],
@@ -517,16 +543,10 @@ function ModelManager({
   }, [activeModelType]);
 
   useEffect(() => {
-    if (activeTab === "models") {
-      fetchModels();
-      checkActiveDownload();
-    }
-  }, [activeTab, fetchModels]);
-
-  useEffect(() => {
+    if (activeTab !== "models") return;
     fetchModels();
     checkActiveDownload();
-  }, [activeModelType]);
+  }, [activeTab, activeModelType, fetchModels]);
 
   useEffect(() => {
     let cancelled = false;

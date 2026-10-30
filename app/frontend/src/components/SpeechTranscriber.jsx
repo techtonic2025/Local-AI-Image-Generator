@@ -90,6 +90,28 @@ function encodeWavPcm16(samples, sampleRate = 16000) {
   return new Blob([view], { type: "audio/wav" });
 }
 
+// Whisper only needs 16 kHz mono, so any format the browser can decode (MP3, M4A, OGG,
+// WebM, FLAC, MP4, WAV) is converted here before upload. This also shrinks long WAV
+// recordings: an hour of 16 kHz mono PCM is about 115 MB.
+async function convertAudioFileTo16kWav(file) {
+  const encoded = await file.arrayBuffer();
+  // An OfflineAudioContext at 16 kHz makes decodeAudioData resample while decoding.
+  const decoder = new OfflineAudioContext(1, 16000, 16000);
+  let decoded;
+  try {
+    decoded = await decoder.decodeAudioData(encoded);
+  } catch (_) {
+    throw new Error(`Could not decode "${file.name}". Supported formats are the ones your browser can play, such as WAV, MP3, M4A, OGG, WebM and FLAC.`);
+  }
+  const mono = new Float32Array(decoded.length);
+  for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+    const data = decoded.getChannelData(channel);
+    for (let i = 0; i < data.length; i += 1) mono[i] += data[i] / decoded.numberOfChannels;
+  }
+  const samples = decoded.sampleRate === 16000 ? mono : resampleLinear(mono, decoded.sampleRate, 16000);
+  return encodeWavPcm16(samples, 16000);
+}
+
 function downloadBlob(filename, content, type) {
   const blob = content instanceof Blob ? content : new Blob([content], { type });
   const url = URL.createObjectURL(blob);
@@ -157,6 +179,7 @@ export default function SpeechTranscriber({
   const [audioUrl, setAudioUrl] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [isConvertingAudio, setIsConvertingAudio] = useState(false);
   const [result, setResult] = useState(null);
   const [resultText, setResultText] = useState("");
   const [showTimestamps, setShowTimestamps] = useState(false);
@@ -286,15 +309,19 @@ export default function SpeechTranscriber({
     setCurrentAudio(wav, `recording-${new Date().toISOString().replace(/[:.]/g, "-")}.wav`);
   };
 
-  const handleUploadAudio = (event) => {
+  const handleUploadAudio = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".wav")) {
-      showAlert?.({ title: "Unsupported Audio", message: "V1 accepts WAV files only. MP3/WebM/M4A will need the later FFmpeg path.", danger: true });
-      return;
+    setIsConvertingAudio(true);
+    try {
+      const wav = await convertAudioFileTo16kWav(file);
+      setCurrentAudio(wav, file.name.replace(/\.[^.]+$/, "") + ".wav");
+    } catch (err) {
+      showAlert?.({ title: "Unsupported Audio", message: err.message || String(err), danger: true });
+    } finally {
+      setIsConvertingAudio(false);
     }
-    setCurrentAudio(file, file.name);
   };
 
   const handleTranscribe = async () => {
@@ -364,7 +391,7 @@ export default function SpeechTranscriber({
       <div className="workspace-title-section">
         <h2 className="workspace-title">Speech Transcriber</h2>
         <p className="workspace-subtitle">
-          Record microphone audio or upload a WAV file, then transcribe locally with whisper.cpp.
+          Record microphone audio or upload an audio file (WAV, MP3, M4A, OGG, FLAC, WebM), then transcribe locally with whisper.cpp.
         </p>
       </div>
 
@@ -485,8 +512,8 @@ export default function SpeechTranscriber({
             )}
             <label className="m3-btn m3-btn-outlined">
               <Upload size={14} />
-              <span>Upload WAV</span>
-              <input type="file" accept=".wav,audio/wav" onChange={handleUploadAudio} hidden />
+              <span>{isConvertingAudio ? "Converting audio..." : "Upload Audio"}</span>
+              <input type="file" accept="audio/*,video/mp4,video/webm,.wav,.mp3,.m4a,.ogg,.opus,.flac,.webm,.mp4" onChange={handleUploadAudio} disabled={isConvertingAudio || isTranscribing} hidden />
             </label>
             {audioBlob && (
               <button className="m3-btn m3-btn-error" onClick={clearCurrentAudio} disabled={isTranscribing || isRecording}>
