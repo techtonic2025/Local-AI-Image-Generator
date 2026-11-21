@@ -11,6 +11,11 @@ const os       = require("os");
 const path     = require("path");
 const { spawn, spawnSync, execSync, exec, execFile } = require("child_process");
 const { comprehensiveWebSearch } = require("../search/core");
+const { installSystemCertificates } = require("./system-ca.cjs");
+
+// Trust the certificates in the system store (antivirus HTTPS scanning, company proxies)
+// before any download starts.
+installSystemCertificates();
 
 // HTTP keep-alive agent for llama-server (eliminates TCP handshake per request)
 const llmHttpAgent = new http.Agent({
@@ -5314,7 +5319,12 @@ function getModelDownloadUrlIssue(url) {
   return "";
 }
 
-function startModelDownload(url, overrideFilename = null, targetDir = MODELS, kind = "image", redirectCount = 0) {
+// How many times a model download reconnects and resumes after the connection drops.
+const MODEL_DOWNLOAD_MAX_RETRIES = 8;
+// A download that receives nothing for this long is treated as dropped and resumed.
+const MODEL_DOWNLOAD_STALL_MS = 60 * 1000;
+
+function startModelDownload(url, overrideFilename = null, targetDir = MODELS, kind = "image") {
   if (downloadState.active && !overrideFilename) {
     console.log("  [download] Already downloading a model");
     return;
@@ -5336,6 +5346,7 @@ function startModelDownload(url, overrideFilename = null, targetDir = MODELS, ki
     }
   }
 
+  const sourceUrl = url;
   const destPath = path.join(targetDir, filename);
   const tempPath = `${destPath}.part`;
   try { fs.unlinkSync(tempPath); } catch (_) {}
@@ -5350,16 +5361,20 @@ function startModelDownload(url, overrideFilename = null, targetDir = MODELS, ki
     error: null,
     kind,
   };
+  console.log(`  [download] Starting download of ${filename} from ${sourceUrl}`);
 
-  if (redirectCount > 0) {
-    console.log(`  [download] Continuing redirected download of ${filename}`);
-  } else {
-    console.log(`  [download] Starting download of ${filename} from ${url}`);
-  }
-
+  // Shared by every attempt of this download; cancelModelDownload() flags it.
+  const session = { cancelled: false, retryTimer: null };
   let downloadFinalized = false;
+  let retries = 0;
+  let totalBytes = 0;
+
+  const partSize = () => {
+    try { return fs.statSync(tempPath).size; } catch (_) { return 0; }
+  };
+
   const failDownload = (message, err = null) => {
-    if (downloadFinalized) return;
+    if (downloadFinalized || session.cancelled) return;
     downloadFinalized = true;
     downloadState.active = false;
     downloadState.error = message;
@@ -5368,150 +5383,243 @@ function startModelDownload(url, overrideFilename = null, targetDir = MODELS, ki
     } else {
       console.error("  [download] Failed:", message);
     }
-    try { fileStream.close(); } catch (_) {}
     try { fs.unlinkSync(tempPath); } catch (_) {}
     activeDownload = null;
   };
 
-  const fileStream = fs.createWriteStream(tempPath);
-  fileStream.on("error", (err) => {
-    failDownload(`Could not write ${filename}: ${err.message}`, err);
-  });
-  
-  const client = url.startsWith("https") ? https : http;
-  const request = client.get(url, {
-    headers: {
+  // A dropped connection keeps the .part file and resumes from where it stopped
+  // (HTTP Range), so a hiccup on a multi-GB file no longer restarts it from zero.
+  const retryOrFail = (reason, err = null) => {
+    if (downloadFinalized || session.cancelled) return;
+    if (retries >= MODEL_DOWNLOAD_MAX_RETRIES) {
+      failDownload(`Download interrupted before ${filename} finished (${reason}), even after ${MODEL_DOWNLOAD_MAX_RETRIES} automatic retries. Check the connection and retry the model download.`, err);
+      return;
+    }
+    retries += 1;
+    const delayMs = Math.min(30000, 2000 * 2 ** (retries - 1));
+    console.warn(`  [download] ${filename}: ${reason}. Resuming from ${formatBytes(partSize())} in ${Math.round(delayMs / 1000)}s (retry ${retries}/${MODEL_DOWNLOAD_MAX_RETRIES})`);
+    downloadState.speed = `Connection lost, resuming (${retries}/${MODEL_DOWNLOAD_MAX_RETRIES})`;
+    session.retryTimer = setTimeout(() => {
+      session.retryTimer = null;
+      // Always restart from the original URL: signed CDN redirect URLs expire.
+      attempt(sourceUrl, 0);
+    }, delayMs);
+    activeDownload = { request: null, fileStream: null, destPath, tempPath, session };
+  };
+
+  const finalize = () => {
+    try {
+      const writtenBytes = partSize();
+      if (totalBytes > 0 && writtenBytes !== totalBytes) {
+        retryOrFail(`wrote ${formatBytes(writtenBytes)} of ${formatBytes(totalBytes)}`);
+        return;
+      }
+      replaceFileWithRetry(tempPath, destPath);
+
+      if (destPath.toLowerCase().endsWith(".zip")) {
+        try {
+          const { execSync } = require("child_process");
+          execSync(`unzip -o "${destPath}" -d "${path.dirname(destPath)}"`, { stdio: "ignore" });
+          fs.unlinkSync(destPath);
+        } catch(err) {
+          console.error("Failed to unzip", err);
+        }
+      }
+
+      downloadState.active = false;
+      downloadFinalized = true;
+      downloadState.progress = 100;
+      downloadState.downloadedBytes = writtenBytes;
+      downloadState.error = null;
+      activeDownload = null;
+      console.log(`  [download] Completed download of ${filename}`);
+    } catch (err) {
+      failDownload(`Could not finalize ${filename}: ${err.message}`);
+    }
+  };
+
+  const attempt = (url, redirectCount) => {
+    if (downloadFinalized || session.cancelled) return;
+    const resumeFrom = partSize();
+    const headers = {
       "User-Agent": "Uncensored-AI-Studio/1.0 (+https://github.com/techjarves/Uncensored-AI-Studio)",
       "Accept": "application/octet-stream, application/x-safetensors, */*",
       "Referer": "https://huggingface.co/",
-    },
-  }, (response) => {
-    activeDownload = { request, fileStream, destPath, tempPath };
-    // Handle redirects (HuggingFace resolve URLs redirect to Cloudfront/S3)
-    if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
-      const redirectUrl = response.headers.location ? new URL(response.headers.location, url).toString() : "";
-      if (!redirectUrl) {
-        failDownload("Redirect response did not include a Location header");
-        return;
-      }
-      if (redirectCount > 10) {
-        failDownload("Too many redirects");
-        return;
-      }
-      console.log(`  [download] Following redirect for ${filename}`);
-      downloadState.speed = "Following redirect";
-      
-      // Clean up redirected request to avoid triggering error handlers later
-      request.removeAllListeners("error");
-      request.destroy();
-      response.resume();
-      
-      fileStream.close();
-      try { fs.unlinkSync(tempPath); } catch (_) {}
-      activeDownload = null;
-      startModelDownload(redirectUrl, filename, targetDir, kind, redirectCount + 1);
-      return;
-    }
+    };
+    if (resumeFrom > 0) headers.Range = `bytes=${resumeFrom}-`;
 
-    if (response.statusCode !== 200) {
-      failDownload(describeDownloadHttpError(response.statusCode, url, response.headers));
-      return;
-    }
+    let attemptDone = false;
+    let stallTimer = null;
+    let fileStream = null;
+    const endAttempt = () => {
+      if (attemptDone) return false;
+      attemptDone = true;
+      clearTimeout(stallTimer);
+      return true;
+    };
 
-    // Repository pages, login walls and error pages come back as 200 + text/html.
-    if (String(response.headers["content-type"] || "").toLowerCase().includes("text/html")) {
-      response.resume();
-      failDownload(`That URL returned a web page, not a model file. ${MODEL_FILE_URL_HINT}`);
-      return;
-    }
-
-    const totalBytes = parseInt(response.headers["content-length"], 10) || 0;
-    downloadState.totalBytes = totalBytes;
-    let downloadedBytes = 0;
-    let startTime = Date.now();
-    let lastTime = startTime;
-    let lastDownloaded = 0;
-
-    response.on("data", (chunk) => {
-      downloadedBytes += chunk.length;
-      downloadState.downloadedBytes = downloadedBytes;
-      fileStream.write(chunk);
-
-      const now = Date.now();
-      const elapsed = (now - lastTime) / 1000;
-      if (elapsed >= 0.5) {
-        const chunkSpeed = (downloadedBytes - lastDownloaded) / elapsed; // bytes/sec
-        lastDownloaded = downloadedBytes;
-        lastTime = now;
-
-        const speedMb = (chunkSpeed / (1024 * 1024)).toFixed(1);
-        downloadState.speed = `${speedMb} MB/s`;
-
-        if (totalBytes > 0) {
-          downloadState.progress = Math.round((downloadedBytes / totalBytes) * 100);
-          const remainingBytes = totalBytes - downloadedBytes;
-          downloadState.eta = Math.round(remainingBytes / chunkSpeed);
-        } else {
-          downloadState.progress = -1; // Indeterminate
-          downloadState.eta = -1;
+    const client = url.startsWith("https") ? https : http;
+    const request = client.get(url, { headers }, (response) => {
+      // Handle redirects (HuggingFace resolve URLs redirect to Cloudfront/S3)
+      if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
+        endAttempt();
+        const redirectUrl = response.headers.location ? new URL(response.headers.location, url).toString() : "";
+        request.removeAllListeners("error");
+        request.on("error", () => {});
+        request.destroy();
+        response.resume();
+        if (!redirectUrl) {
+          failDownload("Redirect response did not include a Location header");
+          return;
         }
-      }
-    });
-
-    response.on("aborted", () => {
-      failDownload(`Download interrupted before ${filename} finished. Delete and retry the model download.`);
-    });
-
-    response.on("error", (err) => {
-      failDownload(`Download stream failed before ${filename} finished. Delete and retry the model download.`, err);
-    });
-
-    response.on("end", () => {
-      if (downloadFinalized) return;
-      if (totalBytes > 0 && downloadedBytes !== totalBytes) {
-        failDownload(`Download incomplete for ${filename}: received ${formatBytes(downloadedBytes)} of ${formatBytes(totalBytes)}. Delete and retry the model download.`);
+        if (redirectCount > 10) {
+          failDownload("Too many redirects");
+          return;
+        }
+        downloadState.speed = "Following redirect";
+        attempt(redirectUrl, redirectCount + 1);
         return;
       }
 
-      fileStream.end(() => {
-        try {
+      // The .part file already holds the whole file.
+      if (response.statusCode === 416 && resumeFrom > 0 && totalBytes > 0 && resumeFrom === totalBytes) {
+        endAttempt();
+        response.resume();
+        finalize();
+        return;
+      }
+
+      const resumed = response.statusCode === 206;
+      if (response.statusCode !== 200 && !resumed) {
+        endAttempt();
+        response.resume();
+        // Server errors and rate limits are worth another try; 4xx answers are not.
+        if (response.statusCode >= 500 || response.statusCode === 429) {
+          retryOrFail(`HTTP ${response.statusCode}`);
+        } else {
+          failDownload(describeDownloadHttpError(response.statusCode, url, response.headers));
+        }
+        return;
+      }
+
+      // Repository pages, login walls and error pages come back as 200 + text/html.
+      if (String(response.headers["content-type"] || "").toLowerCase().includes("text/html")) {
+        endAttempt();
+        response.resume();
+        failDownload(`That URL returned a web page, not a model file. ${MODEL_FILE_URL_HINT}`);
+        return;
+      }
+
+      let downloadedBytes = 0;
+      if (resumed) {
+        const rangeTotal = /\/(\d+)\s*$/.exec(String(response.headers["content-range"] || ""));
+        totalBytes = rangeTotal ? parseInt(rangeTotal[1], 10) : resumeFrom + (parseInt(response.headers["content-length"], 10) || 0);
+        downloadedBytes = resumeFrom;
+        fileStream = fs.createWriteStream(tempPath, { flags: "a" });
+        console.log(`  [download] Resumed ${filename} at ${formatBytes(resumeFrom)} of ${formatBytes(totalBytes)}`);
+      } else {
+        // 200: full body (first attempt, or a server that ignored the Range header).
+        totalBytes = parseInt(response.headers["content-length"], 10) || 0;
+        fileStream = fs.createWriteStream(tempPath, { flags: "w" });
+      }
+      downloadState.totalBytes = totalBytes;
+      downloadState.downloadedBytes = downloadedBytes;
+      activeDownload = { request, fileStream, destPath, tempPath, session };
+
+      fileStream.on("error", (err) => {
+        if (!endAttempt()) return;
+        request.destroy();
+        failDownload(`Could not write ${filename}: ${err.message}`, err);
+      });
+
+      const armStallTimer = () => {
+        clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => {
+          request.destroy(new Error(`no data for ${MODEL_DOWNLOAD_STALL_MS / 1000}s`));
+        }, MODEL_DOWNLOAD_STALL_MS);
+      };
+      armStallTimer();
+
+      let lastTime = Date.now();
+      let lastDownloaded = downloadedBytes;
+
+      response.on("data", (chunk) => {
+        downloadedBytes += chunk.length;
+        downloadState.downloadedBytes = downloadedBytes;
+        armStallTimer();
+        // Respect backpressure so a slow USB drive does not pile the file up in memory.
+        if (!fileStream.write(chunk)) {
+          response.pause();
+          fileStream.once("drain", () => response.resume());
+        }
+
+        const now = Date.now();
+        const elapsed = (now - lastTime) / 1000;
+        if (elapsed >= 0.5) {
+          const chunkSpeed = (downloadedBytes - lastDownloaded) / elapsed; // bytes/sec
+          lastDownloaded = downloadedBytes;
+          lastTime = now;
+
+          const speedMb = (chunkSpeed / (1024 * 1024)).toFixed(1);
+          downloadState.speed = `${speedMb} MB/s`;
+
           if (totalBytes > 0) {
-            const writtenBytes = fs.statSync(tempPath).size;
-            if (writtenBytes !== totalBytes) {
-              failDownload(`Download incomplete for ${filename}: wrote ${formatBytes(writtenBytes)} of ${formatBytes(totalBytes)}. Delete and retry the model download.`);
-              return;
-            }
+            downloadState.progress = Math.round((downloadedBytes / totalBytes) * 100);
+            const remainingBytes = totalBytes - downloadedBytes;
+            downloadState.eta = Math.round(remainingBytes / Math.max(1, chunkSpeed));
+          } else {
+            downloadState.progress = -1; // Indeterminate
+            downloadState.eta = -1;
           }
-          replaceFileWithRetry(tempPath, destPath);
-
-          if (destPath.toLowerCase().endsWith(".zip")) {
-            try {
-              const { execSync } = require("child_process");
-              execSync(`unzip -o "${destPath}" -d "${path.dirname(destPath)}"`, { stdio: "ignore" });
-              fs.unlinkSync(destPath);
-            } catch(err) {
-              console.error("Failed to unzip", err);
-            }
-          }
-
-          downloadState.active = false;
-          downloadFinalized = true;
-          downloadState.progress = 100;
-          downloadState.downloadedBytes = downloadedBytes;
-          downloadState.error = null;
-          activeDownload = null;
-          console.log(`  [download] Completed download of ${filename}`);
-        } catch (err) {
-          failDownload(`Could not finalize ${filename}: ${err.message}`);
         }
       });
-    });
-  });
 
-  request.on("error", (err) => {
-    failDownload(err.message, err);
-  });
-  activeDownload = { request, fileStream, destPath, tempPath };
+      const dropped = (reason, err = null) => {
+        if (!endAttempt()) return;
+        // Keep what arrived: flush it to the .part file, then resume from there.
+        fileStream.end(() => retryOrFail(reason, err));
+      };
+      response.on("aborted", () => dropped("connection closed"));
+      response.on("error", (err) => dropped(err.message || "stream error", err));
+
+      response.on("end", () => {
+        if (!endAttempt()) return;
+        fileStream.end(() => {
+          if (totalBytes > 0 && partSize() < totalBytes) {
+            retryOrFail(`received ${formatBytes(partSize())} of ${formatBytes(totalBytes)}`);
+            return;
+          }
+          finalize();
+        });
+      });
+    });
+
+    request.on("error", (err) => {
+      if (!endAttempt()) return;
+      const finishAttempt = () => {
+        // Bad URLs and certificate problems will not fix themselves: fail now.
+        const permanent = ["ENOTFOUND", "ERR_INVALID_URL", "CERT_HAS_EXPIRED", "SELF_SIGNED_CERT_IN_CHAIN", "DEPTH_ZERO_SELF_SIGNED_CERT", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "ERR_TLS_CERT_ALTNAME_INVALID"];
+        if (permanent.includes(err.code)) {
+          failDownload(describeDownloadNetworkError(err), err);
+        } else {
+          retryOrFail(err.message || "network error", err);
+        }
+      };
+      if (fileStream) fileStream.end(finishAttempt);
+      else finishAttempt();
+    });
+    activeDownload = { request, fileStream, destPath, tempPath, session };
+  };
+
+  attempt(sourceUrl, 0);
+}
+
+function describeDownloadNetworkError(err) {
+  const code = String(err?.code || "");
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER/.test(code)) {
+    return `${err.message}. An antivirus with HTTPS scanning, a company proxy or a firewall is replacing the download's security certificate. The app trusts the certificates installed in your system; if this keeps happening, turn off HTTPS/SSL scanning for this app in the antivirus, or download the file in the browser and put it in the models folder.`;
+  }
+  return err?.message || "Download failed";
 }
 
 function cancelModelDownload() {
@@ -5524,6 +5632,10 @@ function cancelModelDownload() {
       try { activeDownload.process.kill("SIGTERM"); } catch (_) {}
       setTimeout(() => { try { activeDownload?.process?.kill("SIGKILL"); } catch (_) {} }, 1000);
     } else {
+      if (activeDownload.session) {
+        activeDownload.session.cancelled = true;
+        clearTimeout(activeDownload.session.retryTimer);
+      }
       try { activeDownload.request.destroy(new Error("Download cancelled by user")); } catch (_) {}
       try { activeDownload.fileStream.destroy(); } catch (_) {}
       try { fs.unlinkSync(activeDownload.tempPath || activeDownload.destPath); } catch (_) {}
